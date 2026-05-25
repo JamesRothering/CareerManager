@@ -568,11 +568,36 @@ def _default_score_fn(
 
     raw_jobs = [_coerce_job_to_rawjob(j) for j in jobs]
     raw_jobs = [j for j in raw_jobs if j is not None]
-    breakdowns = score_ranked(raw_jobs, ctx)
+
+    # Phase 19.6: consult the A2 score cache up front. For raw_jobs
+    # whose snapshot + (profile_version, scorer_version) already has a
+    # cached verdict, build a :class:`ScoreBreakdown` from the cached
+    # row and skip the deterministic scorer entirely. Cache misses fall
+    # through to ``score_ranked`` so the existing path is intact.
+    cache_hits: list[Any] = []
+    miss_raw_jobs: list[Any] = raw_jobs
+    a1_resolution: dict[str, tuple[Any, Any]] = {}
+    if tenant_id and raw_jobs:
+        try:
+            cache_hits, miss_raw_jobs, a1_resolution = _consume_score_cache(
+                raw_jobs=raw_jobs,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- cache failure is non-fatal
+            logger.exception(
+                "plan_run: score cache pre-pass failed; falling back to full rescore"
+            )
+            cache_hits, miss_raw_jobs, a1_resolution = [], raw_jobs, {}
+
+    scored_breakdowns = score_ranked(miss_raw_jobs, ctx) if miss_raw_jobs else []
+    breakdowns = cache_hits + scored_breakdowns
+    breakdowns.sort(key=lambda b: getattr(b, "final_score", 0.0), reverse=True)
 
     if tenant_id:
         try:
-            _resolve_and_patch_posting_ids(breakdowns, raw_jobs, tenant_id)
+            _resolve_and_patch_posting_ids(scored_breakdowns, miss_raw_jobs, tenant_id)
         except Exception:  # noqa: BLE001 - non-fatal; logged
             logger.exception(
                 "plan_run: posting-id resolution failed; review entries "
@@ -594,12 +619,12 @@ def _default_score_fn(
         except Exception:  # noqa: BLE001 -- never bounce a successful score
             logger.exception("plan_run: A1 fast-path rejects failed")
 
-        # Phase 19.4: write-through to job_posting_scores. Best-effort;
-        # cache misses just mean the next plan run rescores. Skipped
-        # when ``tenant_id`` is empty (legacy test stubs).
+        # Phase 19.4: write-through to job_posting_scores. Skip the
+        # cached-hit breakdowns (they came from the cache row we'd be
+        # re-inserting, and on-conflict-do-nothing would no-op anyway).
         try:
             _persist_score_cache(
-                breakdowns=breakdowns,
+                breakdowns=scored_breakdowns,
                 tenant_id=tenant_id,
                 profile_id=profile_id,
                 profile_data=profile_data,
@@ -607,7 +632,179 @@ def _default_score_fn(
         except Exception:  # noqa: BLE001 -- never bounce a successful score
             logger.exception("plan_run: score cache write-through failed")
 
+    _ = a1_resolution  # currently informational; reserved for future A1 telemetry
     return breakdowns
+
+
+def _consume_score_cache(
+    *,
+    raw_jobs: list[Any],
+    tenant_id: str,
+    profile_id: str,
+    profile_data: dict[str, Any],
+) -> tuple[list[Any], list[Any], dict[str, tuple[Any, Any]]]:
+    """Pre-pass that turns the A2 score cache into actual fast-path savings.
+
+    Resolves each ``RawJob.id -> (posting_id, snapshot_id)`` via the
+    ``JobPosting`` row, then looks up
+    ``(tenant_id, snapshot_id, profile_id, profile_version, scorer_version)``
+    in :mod:`src.filter.score_cache`. For each hit we synthesise a
+    :class:`ScoreBreakdown` from the cached payload so the downstream
+    plan_run flow keeps working unchanged; misses fall through to the
+    real scorer.
+
+    Returns ``(cache_hit_breakdowns, miss_raw_jobs, resolution_map)``.
+    """
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.core.models import JobPosting  # noqa: PLC0415
+    from src.filter.score_cache import (  # noqa: PLC0415
+        compute_profile_version,
+        get_cached_score,
+    )
+    from src.matching.scorer import ScoreBreakdown  # noqa: PLC0415
+
+    if not raw_jobs:
+        return [], [], {}
+
+    # Build (source, source_id) keys and map RawJob.id -> key.
+    rawjob_id_to_key: dict[str, tuple[str, str]] = {}
+    keys: set[tuple[str, str]] = set()
+    for rj in raw_jobs:
+        source = getattr(rj, "source", None)
+        source_id = getattr(rj, "source_id", None)
+        rj_id = getattr(rj, "id", None)
+        if source and source_id and rj_id is not None:
+            key = (str(source), str(source_id))
+            keys.add(key)
+            rawjob_id_to_key[str(rj_id)] = key
+
+    if not keys:
+        return [], list(raw_jobs), {}
+
+    from sqlalchemy import and_, or_, select  # noqa: PLC0415
+
+    profile_version = compute_profile_version(profile_data)
+    factory = get_session_factory()
+
+    cache_hits: list[Any] = []
+    miss_raw_jobs: list[Any] = []
+    resolution: dict[str, tuple[Any, Any]] = {}
+
+    with factory() as session:
+        rows = (
+            session.execute(
+                select(
+                    JobPosting.id,
+                    JobPosting.latest_snapshot_id,
+                    JobPosting.source,
+                    JobPosting.source_id,
+                ).where(
+                    JobPosting.tenant_id == tenant_id,
+                    or_(
+                        *[
+                            and_(
+                                JobPosting.source == s,
+                                JobPosting.source_id == sid,
+                            )
+                            for s, sid in keys
+                        ]
+                    ),
+                )
+            )
+            .all()
+        )
+        key_to_ids = {(row.source, row.source_id): (row.id, row.latest_snapshot_id) for row in rows}
+
+        for rj in raw_jobs:
+            rj_id = str(getattr(rj, "id", "") or "")
+            key = rawjob_id_to_key.get(rj_id)
+            persisted = key_to_ids.get(key) if key else None
+            if persisted is not None:
+                resolution[rj_id] = persisted
+            posting_id, snapshot_id = persisted if persisted else (None, None)
+            if snapshot_id is None:
+                miss_raw_jobs.append(rj)
+                continue
+
+            hit = get_cached_score(
+                session,
+                tenant_id=tenant_id,
+                snapshot_id=snapshot_id,
+                profile_id=profile_id,
+                profile_version=profile_version,
+            )
+            if hit is None:
+                miss_raw_jobs.append(rj)
+                continue
+
+            cache_hits.append(
+                _breakdown_from_cached_verdict(
+                    raw_job=rj,
+                    posting_id=posting_id,
+                    snapshot_id=snapshot_id,
+                    cached=hit,
+                    breakdown_cls=ScoreBreakdown,
+                )
+            )
+
+    logger.info(
+        "plan_run: score cache pre-pass tenant=%s hits=%d misses=%d",
+        tenant_id,
+        len(cache_hits),
+        len(miss_raw_jobs),
+    )
+    return cache_hits, miss_raw_jobs, resolution
+
+
+def _breakdown_from_cached_verdict(
+    *,
+    raw_job: Any,
+    posting_id: Any,
+    snapshot_id: Any,
+    cached: Any,
+    breakdown_cls: Any,
+) -> Any:
+    """Rehydrate a :class:`ScoreBreakdown` from a cached row.
+
+    The cached ``score_breakdown`` JSON carries every field
+    ``ScoreBreakdown.to_dict()`` produced at write time. We replay the
+    salient ones (``final_score``, ``disqualified``, component scores)
+    so downstream code -- top-N selection, review-queue rendering, the
+    "cache provenance" badge -- gets a breakdown that quacks like a
+    freshly computed one. ``job_id`` is set to the persisted
+    ``posting_id`` so the pre-submit gate works the same as it does for
+    breakdowns that went through :func:`_resolve_and_patch_posting_ids`.
+    """
+    bd_payload = dict(cached.score_breakdown or {})
+    bd = breakdown_cls(
+        job_id=str(posting_id),
+        company=bd_payload.get("company") or getattr(raw_job, "company", ""),
+        title=bd_payload.get("title") or getattr(raw_job, "title", ""),
+        job_snapshot_id=str(snapshot_id),
+    )
+    bd.final_score = float(cached.final_score) if cached.final_score is not None else 0.0
+    bd.disqualified = bool(bd_payload.get("disqualified") or cached.verdict == "reject")
+    bd.skill_overlap = float(bd_payload.get("skill_overlap") or 0.0)
+    bd.keyword_similarity = float(bd_payload.get("keyword_similarity") or 0.0)
+    bd.rule_bonus = float(bd_payload.get("rule_bonus") or 0.0)
+    bd.quality_multiplier = float(bd_payload.get("quality_multiplier") or 1.0)
+    bd.disqualify_reasons = list(bd_payload.get("disqualify_reasons") or [])
+    # Stash cache provenance so ReviewQueueView's "cached · profile vXYZ ·
+    # scorer sABC" badge can render. The frontend reads
+    # ``score_breakdown.cache.{profile_version, scorer_version, computed_at}``.
+    bd_payload["cache"] = {
+        "profile_version": cached.profile_version,
+        "scorer_version": cached.scorer_version,
+        "computed_at": cached.computed_at.isoformat() if cached.computed_at else None,
+    }
+    # Some downstream consumers serialise the breakdown via to_dict();
+    # stash the merged payload under a private attribute so a future
+    # ``to_dict`` override can return the cached breakdown verbatim. The
+    # current code path that reads ``breakdown.to_dict()`` is the
+    # write-through which we skip for cache hits, so the field is
+    # informational today.
+    bd._cached_payload = bd_payload  # type: ignore[attr-defined]
+    return bd
 
 
 def _apply_a1_rejects(

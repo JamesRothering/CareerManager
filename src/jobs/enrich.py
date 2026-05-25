@@ -183,3 +183,14 @@ def _emit(event: ContentChangedEvent) -> None:
             listener(event)
         except Exception as exc:  # noqa: BLE001 -- listeners are best-effort
             logger.warning("content_changed listener raised: %s", exc, exc_info=True)
+
+
+# Phase 19.3: install the production ``posting.tag`` enqueue listener at the
+# bottom of this module so every entry point that calls :func:`enrich_posting`
+# (Celery worker, FastAPI web search path, CLI) registers it. The listener
+# module is imported here after the public symbols are defined so the
+# circular ``enrich -> listeners -> enrich`` import resolves to the
+# already-populated module namespace. The install helper is idempotent.
+from src.jobs import listeners as _listeners  # noqa: E402
+
+_listeners.install()

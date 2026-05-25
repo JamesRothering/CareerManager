@@ -47,14 +47,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-# Phase 19.3: register the production ``on_content_changed`` listener so a
-# fresh snapshot from :func:`src.jobs.enrich.enrich_posting` enqueues a
-# ``posting.tag`` automatically. Import-time install is idempotent.
-from src.jobs import listeners as _jobs_listeners
 from src.tasks.app import celery_app
 from src.tasks.base import AutoApplyTask
 
-_jobs_listeners.install()
+# Phase 19.3: ``src.jobs.enrich`` installs the production
+# ``on_content_changed`` listener at module load (idempotent), so any
+# entry point that imports it -- worker, web search, CLI -- enqueues
+# ``posting.tag`` automatically.
 
 logger = logging.getLogger(__name__)
 
