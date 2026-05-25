@@ -378,7 +378,73 @@ onMounted(() => {
   }
   void loadFilterProfiles()
   void loadMaterialTemplates()
+  // Phase 19.7: backfill banner gauge.
+  void refreshTaggingStatus()
 })
+
+// Phase 19.7: tagging-backlog gauge + per-posting retag plumbing.
+const taggingStatus = reactive({ pending: 0, taggerVersion: null, ok: false })
+const retagState = reactive({})  // postingId -> { loading, error, taskId }
+
+async function refreshTaggingStatus() {
+  try {
+    const data = await api.get("/jobs/tagging/status")
+    taggingStatus.pending = Number(data?.pending) || 0
+    taggingStatus.taggerVersion = data?.tagger_version ?? null
+    taggingStatus.ok = Boolean(data?.ok)
+  } catch (_) {
+    taggingStatus.ok = false
+  }
+}
+
+function postingTags(job) {
+  const raw = job?.posting_tags || {}
+  const chips = []
+  if (raw.work_mode && raw.work_mode !== "unknown") {
+    chips.push({ key: "work_mode", label: raw.work_mode })
+  }
+  if (raw.level && raw.level !== "unknown") {
+    chips.push({ key: "level", label: raw.level })
+  }
+  if (raw.intern_eligible) {
+    chips.push({ key: "intern_eligible", label: "Intern eligible" })
+  }
+  if (raw.sponsorship_signal === "offered") {
+    chips.push({ key: "sponsorship", label: "Sponsorship offered" })
+  } else if (raw.sponsorship_signal === "not_offered") {
+    chips.push({ key: "sponsorship", label: "No sponsorship", variant: "danger" })
+  }
+  if (raw.clearance_required) {
+    chips.push({ key: "clearance", label: "Clearance required", variant: "danger" })
+  }
+  if (raw.usa_only) {
+    chips.push({ key: "usa_only", label: "US only" })
+  }
+  if (raw.posting_age_bucket && raw.posting_age_bucket !== "unknown") {
+    chips.push({ key: "age", label: raw.posting_age_bucket.replace(/_/g, " ") })
+  }
+  return chips
+}
+
+async function retagPosting(job) {
+  if (!job?.posting_id) {
+    return
+  }
+  const key = String(job.posting_id)
+  retagState[key] = { loading: true, error: null, taskId: null }
+  try {
+    const data = await api.post(`/jobs/postings/${key}/retag`, {})
+    retagState[key] = {
+      loading: false,
+      error: data?.ok ? null : data?.status || "no_snapshot",
+      taskId: data?.task_id || null,
+    }
+    // Re-poll backlog so the banner reflects the newly-enqueued work.
+    void refreshTaggingStatus()
+  } catch (exc) {
+    retagState[key] = { loading: false, error: String(exc), taskId: null }
+  }
+}
 
 const emptyStateMessage = computed(() => {
   if (!state.searched) {
@@ -1441,6 +1507,19 @@ function buildPageButtons(total, current) {
       @refresh="forceRefreshSearch"
     />
 
+    <!-- Phase 19.7: snapshot-tagger backlog banner. Stays hidden when
+         everything is tagged; shows the pending count and the current
+         tagger version while the backfill drains so users know why
+         some chips are missing. -->
+    <Alert v-if="taggingStatus.pending > 0" variant="default" class="jobs-tagging-banner">
+      <Loader2 class="h-4 w-4 animate-spin" />
+      <AlertDescription>
+        Tagging {{ taggingStatus.pending }} job snapshots
+        <span v-if="taggingStatus.taggerVersion !== null"> · tagger v{{ taggingStatus.taggerVersion }}</span>
+        — chips and fast-path rejects appear once each snapshot finishes.
+      </AlertDescription>
+    </Alert>
+
     <Card class="jobs-results-shell">
       <div class="section-head jobs-results-head">
         <div class="jobs-results-copy flex items-center gap-2">
@@ -1540,6 +1619,47 @@ function buildPageButtons(total, current) {
             <div v-if="metadataChips(job).length" class="job-card-box">
               <div class="chip-row job-card-tags">
                 <span v-for="chip in metadataChips(job)" :key="chip" class="chip subtle">{{ chip }}</span>
+              </div>
+            </div>
+
+            <!-- Phase 19.7: A1 snapshot tag chips + retag control. -->
+            <div
+              v-if="job.posting_id && (postingTags(job).length || job.posting_tags_status === 'pending' || job.posting_tags_status === 'computing' || job.posting_tags_status === 'failed')"
+              class="job-card-box"
+            >
+              <div class="chip-row job-card-posting-tags">
+                <span
+                  v-if="job.posting_tags_status === 'pending' || job.posting_tags_status === 'computing'"
+                  class="chip subtle"
+                >
+                  <Loader2 class="h-3 w-3 animate-spin" /> Tagging…
+                </span>
+                <span
+                  v-else-if="job.posting_tags_status === 'failed'"
+                  class="chip danger"
+                  title="Tagger failed for this snapshot; using slow scoring."
+                >
+                  Tag failed
+                </span>
+                <span
+                  v-for="chip in postingTags(job)"
+                  :key="chip.key"
+                  class="chip"
+                  :class="chip.variant === 'danger' ? 'danger' : 'subtle'"
+                >
+                  {{ chip.label }}
+                </span>
+                <button
+                  class="chip-button"
+                  type="button"
+                  :disabled="retagState[job.posting_id]?.loading"
+                  :title="retagState[job.posting_id]?.error || 'Recompute tags for this posting'"
+                  @click="retagPosting(job)"
+                >
+                  <Loader2 v-if="retagState[job.posting_id]?.loading" class="h-3 w-3 animate-spin" />
+                  <RefreshCw v-else class="h-3 w-3" />
+                  Retag
+                </button>
               </div>
             </div>
 

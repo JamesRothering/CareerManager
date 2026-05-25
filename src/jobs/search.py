@@ -1,27 +1,34 @@
-"""Phase 13.4: cache-first search flow with distributed lock.
+"""Phase 13.4 search flow, refactored in Phase 19.5 to always hit upstream.
 
 The function :func:`cached_search` is the only thing intake callers (the
-LinkedIn search wrapper, future ATS-wide search) should reach for. It
-implements the documented Phase 13 behaviour:
+LinkedIn search wrapper, future ATS-wide search) should reach for. The
+Phase 19 contract is:
 
-  1. Normalize the incoming params and look up the matching ``SearchQuery``
+  1. Normalize the incoming params and upsert the matching ``SearchQuery``
      by (tenant_id, source, normalized_key).
-  2. If the query exists, its ``status == "fresh"``, and the caller did
-     not pass ``force_refresh=True``: return the cached postings without
-     touching the network.
-  3. Otherwise acquire a Phase 12 distributed lock on the fingerprint
-     (so two concurrent submissions of the same search don't double-fetch),
-     run the user-supplied ``fetch_fn``, persist the returned postings as
-     ``search_results`` rows, and stamp ``last_run_at`` / ``status``.
+  2. Acquire a Phase 12 distributed lock on the fingerprint so two
+     concurrent submissions of the same search don't double-fetch.
+  3. Run the user-supplied ``fetch_fn``, persist the returned postings as
+     ``search_results`` rows, prune links not seen this run, and stamp
+     ``last_run_at`` / ``status``.
   4. On scrape failure the *old* cached results are preserved -- the
      query's ``last_error`` is set and ``status`` flips to ``stale`` so
      the next read knows the cache is degraded, but
      ``cached_search(...).postings`` still returns the previous run's
      rows so the UI doesn't go blank during a LinkedIn auth bounce.
 
-The function is intentionally framework-agnostic. ``fetch_fn`` can be
-sync or async; the wrapper does not know about Playwright or httpx,
-and unit tests stub it with a list literal.
+The freshness short-circuit that Phase 13 used is gone (D029): a
+fresh TTL hit on the whole result-set was hiding newly posted jobs
+between the previous scrape and TTL expiry. The per-posting analysis
+caches (snapshot tags in :mod:`src.jobs.tagger`; profile-scoped score
+cache in :mod:`src.filter.score_cache`) carry the cost-cutting role
+the TTL used to.
+
+``force_refresh`` is now a no-op; it is accepted for backwards
+compatibility with callers wired up in Phase 13. The function is
+intentionally framework-agnostic. ``fetch_fn`` can be sync or async;
+the wrapper does not know about Playwright or httpx, and unit tests
+stub it with a list literal.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from src.cache import Cache
@@ -109,29 +116,14 @@ async def cached_search(
     lock_ttl: int = DEFAULT_LOCK_TTL_S,
     now: datetime | None = None,
 ) -> SearchOutcome:
-    """Cache-first search. See module docstring for the contract."""
+    """Always-refresh search (Phase 19.5). See module docstring."""
     now = now or datetime.now(UTC)
+    # ``force_refresh`` / ``freshness_hours`` are kept on the signature
+    # for backwards compatibility with Phase 13 callers; the TTL short-
+    # circuit they once drove was removed in Phase 19.5 (D029).
+    del force_refresh, freshness_hours
     normalized = normalize_search_key(params, source=source)
     fingerprint = search_query_fingerprint(params, source=source)
-    query = store.find_query(source, fingerprint)
-
-    if query is not None and _can_serve_from_cache(
-        query=query, force_refresh=force_refresh, freshness_hours=freshness_hours, now=now,
-    ):
-        postings = store.get_results(query.id)
-        logger.info(
-            "Job index cache hit: source=%s key=%s n=%d", source, fingerprint[:12], len(postings),
-        )
-        return SearchOutcome(
-            postings=postings,
-            cached=True,
-            stale=False,
-            query_id=query.id,
-            last_run_at=query.last_run_at,
-            last_success_at=query.last_success_at,
-            last_error=None,
-            counts={"cached": len(postings)},
-        )
 
     lock_key = f"jobs:search:{source}:{fingerprint}"
     cache_lock = cache.lock(lock_key, ttl=lock_ttl) if cache is not None else _NullLock()
@@ -143,7 +135,7 @@ async def cached_search(
             logger.info(
                 "Job index lock contention: returning previous results for %s", fingerprint[:12]
             )
-            query = query or store.find_query(source, fingerprint)
+            query = store.find_query(source, fingerprint)
             postings = store.get_results(query.id) if query is not None else []
             return SearchOutcome(
                 postings=postings,
@@ -164,26 +156,9 @@ async def cached_search(
             max_pages=max_pages,
         )
 
-        # Re-check inside the lock: a concurrent writer may have
-        # populated fresh results while we were waiting.
-        if not force_refresh and _can_serve_from_cache(
-            query=query,
-            force_refresh=False,
-            freshness_hours=freshness_hours,
-            now=now,
-        ):
-            postings = store.get_results(query.id)
-            return SearchOutcome(
-                postings=postings,
-                cached=True,
-                stale=False,
-                query_id=query.id,
-                last_run_at=query.last_run_at,
-                last_success_at=query.last_success_at,
-                last_error=None,
-                counts={"cached": len(postings)},
-            )
-
+        # Phase 19.5: no TTL re-check inside the lock. The whole point
+        # of this refactor is that every search hits upstream so the
+        # window between two scrapes doesn't hide new postings (D029).
         run_started_at = datetime.now(UTC)
         try:
             scraped = fetch_fn()
@@ -251,22 +226,6 @@ async def cached_search(
                 "removed": removed_count,
             },
         )
-
-
-def _can_serve_from_cache(
-    *,
-    query: Any,
-    force_refresh: bool,
-    freshness_hours: int,
-    now: datetime,
-) -> bool:
-    if force_refresh:
-        return False
-    if query.status != "fresh":
-        return False
-    if query.last_success_at is None:
-        return False
-    return (now - query.last_success_at) < timedelta(hours=freshness_hours)
 
 
 class _NullLock:

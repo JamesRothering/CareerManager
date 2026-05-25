@@ -47,8 +47,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+# Phase 19.3: register the production ``on_content_changed`` listener so a
+# fresh snapshot from :func:`src.jobs.enrich.enrich_posting` enqueues a
+# ``posting.tag`` automatically. Import-time install is idempotent.
+from src.jobs import listeners as _jobs_listeners
 from src.tasks.app import celery_app
 from src.tasks.base import AutoApplyTask
+
+_jobs_listeners.install()
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +63,36 @@ logger = logging.getLogger(__name__)
 
 
 class SearchRefreshPayload(BaseModel):
-    query_id: str
+    """Phase 19.3b: ``profile_id`` resolves a saved-search definition
+    from :mod:`src.application.search_profiles`; ``query_id`` is kept
+    for the legacy "re-run this specific normalized search" entrypoint.
+
+    At least one of the two must be set; the daily fan-out enqueues by
+    ``profile_id`` so the upstream rule (every search hits upstream)
+    holds while we remove the no-op task body.
+    """
+
+    query_id: str | None = None
+    profile_id: str | None = None
     source: str = Field(default="linkedin")
     max_pages: int | None = None
 
 
 class JobEnrichPayload(BaseModel):
     posting_id: str
+
+
+class PostingTagPayload(BaseModel):
+    """Phase 19.3: re-tag a single snapshot."""
+
+    snapshot_id: str
+
+
+class PostingTagBackfillPayload(BaseModel):
+    """Phase 19.3: paginated retag for snapshots trailing ``TAGGER_VERSION``."""
+
+    batch_size: int = 100
+    max_batches: int = 1
 
 
 class MaterialsGeneratePayload(BaseModel):
@@ -161,60 +190,187 @@ def _coerce(model_cls: type[BaseModel], data: dict[str, Any] | None) -> BaseMode
 
 @celery_app.task(name="search.refresh", base=AutoApplyTask, bind=True)
 def search_refresh(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
-    """Re-scrape a saved search and update its ``search_results``
-    links. Phase 13.4's ``cached_search`` does the real work; this is
-    the bounded entry point for the worker.
+    """Re-scrape one saved-search profile (Phase 19.3b).
 
-    Phase 18.1: the saved-search fan-out and the per-source refresh
-    plumbing live in :mod:`src.application.jobs.search_jobs` / Phase
-    13.4 ``cached_search``. Manual ``search.refresh`` enqueues from
-    the operator UI / CLI still expect the task to exist; the actual
-    per-saved-search invocation lands here once the saved-search
-    registry surfaces query-id → kwargs (the rest of the Phase 18
-    surface drives the orchestrator, which already calls search_jobs
-    directly).
+    Resolves the saved-search definition from
+    :mod:`src.application.search_profiles` and invokes
+    :func:`src.application.jobs.search_jobs` with ``use_job_index=True``
+    so the normal ``cached_search`` flow runs and ``search_results`` rows
+    are kept current. ``force_refresh=True`` is implicit: the Phase 19
+    rule is that every saved-search tick hits upstream.
+
+    ``query_id`` is still accepted for the legacy single-query refresh
+    path (operator UI "refresh this search now" button); the body looks
+    up the ``SearchQuery`` row, rebuilds its parameters from
+    ``raw_params``, and dispatches the same way.
     """
     args = _coerce(SearchRefreshPayload, payload)
+    if not args.profile_id and not args.query_id:
+        raise TypeError(
+            "search.refresh requires either profile_id or query_id"
+        )
+
     logger.info(
-        "search.refresh query_id=%s source=%s max_pages=%s",
+        "search.refresh profile_id=%s query_id=%s source=%s",
+        args.profile_id,
         args.query_id,
         args.source,
-        args.max_pages,
     )
+
+    import asyncio  # noqa: PLC0415
+
+    from src.application.jobs import search_jobs as search_jobs_use_case  # noqa: PLC0415
+    from src.application.search_profiles import (  # noqa: PLC0415
+        load_search_profiles_data,
+    )
+
+    profile_payload: dict[str, Any] | None = None
+    if args.profile_id:
+        data = load_search_profiles_data()
+        profiles = {p["id"]: p for p in data.get("profiles", [])}
+        profile_payload = profiles.get(args.profile_id)
+        if profile_payload is None:
+            return {
+                "task": "search.refresh",
+                "profile_id": args.profile_id,
+                "status": "profile_not_found",
+            }
+    else:
+        # query_id branch: look the row up and reuse its raw_params.
+        from uuid import UUID  # noqa: PLC0415
+
+        from src.core.database import get_session_factory  # noqa: PLC0415
+        from src.core.models import SearchQuery  # noqa: PLC0415
+
+        try:
+            query_uuid = UUID(args.query_id)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return {
+                "task": "search.refresh",
+                "query_id": args.query_id,
+                "status": "invalid_query_id",
+            }
+        factory = get_session_factory()
+        with factory() as session:
+            row = session.get(SearchQuery, query_uuid)
+            if row is None:
+                return {
+                    "task": "search.refresh",
+                    "query_id": args.query_id,
+                    "status": "query_not_found",
+                }
+            profile_payload = {
+                "source": row.source,
+                **(row.raw_params or {}),
+            }
+
+    assert profile_payload is not None  # noqa: S101 -- guarded above
+
+    profile_id_for_search = args.profile_id or "default"
+    try:
+        result = asyncio.run(
+            search_jobs_use_case(
+                profile=profile_id_for_search,
+                source=profile_payload.get("source") or args.source or "ats",
+                ats=profile_payload.get("ats") or None,
+                company=profile_payload.get("company") or None,
+                keyword=None,
+                keywords=profile_payload.get("keywords") or None,
+                search_location=None,
+                time_filter=profile_payload.get("time_filter") or "week",
+                experience_levels=profile_payload.get("experience_levels") or None,
+                employment_types=profile_payload.get("employment_types") or None,
+                location_types=profile_payload.get("location_types") or None,
+                locations=profile_payload.get("locations") or None,
+                pay_operator=profile_payload.get("pay_operator") or None,
+                pay_amount=profile_payload.get("pay_amount"),
+                experience_operator=profile_payload.get("experience_operator") or None,
+                experience_years=profile_payload.get("experience_years"),
+                education_levels=profile_payload.get("education_levels") or None,
+                max_pages=args.max_pages or profile_payload.get("max_pages") or 20,
+                no_enrich=False,
+                headless=True,
+                require_keyword_for_linkedin=False,
+                use_job_index=True,
+                force_refresh=True,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("search.refresh failed for profile_id=%s", profile_id_for_search)
+        return {
+            "task": "search.refresh",
+            "profile_id": args.profile_id,
+            "query_id": args.query_id,
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    counts = result.get("counts") or {}
     return {
         "task": "search.refresh",
+        "profile_id": args.profile_id,
         "query_id": args.query_id,
-        "source": args.source,
-        "max_pages": args.max_pages,
-        "status": "not_implemented",
-        "detail": (
-            "search.refresh body is registered for Phase 18 audit + "
-            "Beat compatibility. The actual saved-search refresh "
-            "currently runs through orchestration.plan_run / direct "
-            "search_jobs CLI calls; lighting up a query_id->kwargs "
-            "registry path is tracked by the Phase 18+ saved-search "
-            "follow-up."
-        ),
+        "source": profile_payload.get("source") or args.source,
+        "total": counts.get("total"),
+        "errors": result.get("errors") or [],
+        "status": "ok",
     }
 
 
 @celery_app.task(name="search.daily_fanout", base=AutoApplyTask, bind=True)
 def search_daily_fanout(self: AutoApplyTask) -> dict[str, Any]:
-    """Beat-driven saved-search fan-out. Phase 17 explodes this into
-    per-source ``search.refresh`` children once the saved-search
-    registry surfaces source / kwargs lookup; until then the Beat
-    tick is a no-op marker that lands an audit row + trace so the
-    operator can confirm Beat is running."""
+    """Phase 19.3b: enumerate saved-search profiles and enqueue one
+    ``search.refresh`` child per active profile.
+
+    The Phase 19 rule is that every saved-search tick hits upstream:
+    this fan-out simply explodes the schedule entry into per-profile
+    refreshes; the children themselves call ``cached_search`` with
+    ``force_refresh=True`` so the cached-result short-circuit cannot
+    hide newly posted jobs.
+    """
     logger.info("search.daily_fanout tick")
+
+    from src.application.search_profiles import (  # noqa: PLC0415
+        load_search_profiles_data,
+    )
+
+    data = load_search_profiles_data()
+    profiles = data.get("profiles") or []
+
+    enqueued: list[dict[str, str]] = []
+    for profile in profiles:
+        profile_id = profile.get("id")
+        if not profile_id:
+            continue
+        try:
+            async_result = celery_app.send_task(
+                "search.refresh",
+                kwargs={
+                    "profile_id": profile_id,
+                    "source": profile.get("source") or "ats",
+                    "max_pages": profile.get("max_pages"),
+                },
+                queue="search",
+            )
+        except Exception as exc:  # noqa: BLE001 -- one bad profile must not stop the rest
+            logger.warning(
+                "search.daily_fanout: enqueue failed for profile %s: %s",
+                profile_id,
+                exc,
+            )
+            continue
+        enqueued.append(
+            {
+                "profile_id": profile_id,
+                "task_id": str(getattr(async_result, "id", "")),
+            }
+        )
+
     return {
         "task": "search.daily_fanout",
-        "status": "not_implemented",
-        "detail": (
-            "search.daily_fanout is currently a no-op tick. "
-            "orchestration.plan_run owns the production search path; "
-            "this slot exists so a future saved-search registry can "
-            "hook in without changing the Beat schedule."
-        ),
+        "enqueued": enqueued,
+        "profile_count": len(profiles),
+        "status": "ok",
     }
 
 
@@ -381,6 +537,121 @@ def jobs_enrich(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
         "snapshot_id": str(result.snapshot_id),
         "content_changed": result.content_changed,
         "state": result.state,
+        "status": "ok",
+    }
+
+
+# ---- Tasks: posting tagging (Phase 19.3) ----------------------------
+
+
+@celery_app.task(name="posting.tag", base=AutoApplyTask, bind=True)
+def posting_tag(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
+    """Compute + persist A1 objective tags for one ``JobSnapshot``.
+
+    Fired by the ``on_content_changed`` listener (Phase 19.3) whenever
+    ``enrich_posting`` lands a new snapshot, and also as the per-row
+    unit of work for ``posting.tag_backfill``. The tagger is pure-
+    function and profile-independent; this wrapper only owns the DB
+    transaction and audit envelope.
+    """
+    args = _coerce(PostingTagPayload, payload)
+    logger.info("posting.tag snapshot_id=%s", args.snapshot_id)
+
+    from uuid import UUID  # noqa: PLC0415
+
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.jobs.tag_service import tag_snapshot  # noqa: PLC0415
+
+    try:
+        snapshot_uuid = UUID(args.snapshot_id)
+    except ValueError:
+        return {
+            "task": "posting.tag",
+            "snapshot_id": args.snapshot_id,
+            "status": "invalid_snapshot_id",
+        }
+
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        try:
+            result = tag_snapshot(session, snapshot_uuid)
+        except LookupError:
+            return {
+                "task": "posting.tag",
+                "snapshot_id": args.snapshot_id,
+                "status": "snapshot_not_found",
+            }
+
+    return {
+        "task": "posting.tag",
+        "snapshot_id": str(result.snapshot_id),
+        "posting_id": str(result.posting_id),
+        "tags_status": result.status,
+        "tagger_version": result.tagger_version,
+        "tags": result.tags,
+        "error": result.error,
+        "status": "ok" if result.error is None else "failed",
+    }
+
+
+@celery_app.task(name="posting.tag_backfill", base=AutoApplyTask, bind=True)
+def posting_tag_backfill(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
+    """Paginated retag for snapshots whose ``tagger_version`` trails
+    :data:`TAGGER_VERSION`.
+
+    Each batch is one transaction. The "tagging in progress" banner in
+    JobsView (Phase 19.7) reads :func:`count_pending` independently;
+    until the backfill drains, the filter fast-path falls back to slow
+    scoring rather than mis-rejecting on stale tags (D029).
+    """
+    args = _coerce(PostingTagBackfillPayload, payload)
+    logger.info(
+        "posting.tag_backfill batch_size=%d max_batches=%d",
+        args.batch_size,
+        args.max_batches,
+    )
+
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.jobs.tag_service import (  # noqa: PLC0415
+        select_stale_snapshots,
+        tag_snapshot,
+    )
+    from src.tasks.context import current_tenant_id  # noqa: PLC0415
+
+    tenant_id = current_tenant_id() or "default"
+    factory = get_session_factory()
+
+    processed = 0
+    failed = 0
+    remaining = 0
+    for _ in range(max(args.max_batches, 1)):
+        with factory() as session, session.begin():
+            slice_ = select_stale_snapshots(
+                session, tenant_id=tenant_id, batch_size=args.batch_size
+            )
+            if not slice_.snapshot_ids:
+                remaining = slice_.remaining_estimate
+                break
+            for snap_id in slice_.snapshot_ids:
+                try:
+                    result = tag_snapshot(session, snap_id)
+                except LookupError:
+                    continue
+                processed += 1
+                if result.status != "ready":
+                    failed += 1
+            remaining = max(slice_.remaining_estimate - len(slice_.snapshot_ids), 0)
+        if processed == 0:
+            break
+
+    return {
+        "task": "posting.tag_backfill",
+        "tenant_id": tenant_id,
+        "processed": processed,
+        "failed": failed,
+        "remaining_estimate": remaining,
+        "batch_size": args.batch_size,
+        "max_batches": args.max_batches,
         "status": "ok",
     }
 
@@ -1061,6 +1332,8 @@ KNOWN_TASK_NAMES: tuple[str, ...] = (
     "search.refresh",
     "search.daily_fanout",
     "jobs.enrich",
+    "posting.tag",
+    "posting.tag_backfill",
     "materials.generate",
     "application.prepare",
     "application.fill",
@@ -1083,6 +1356,8 @@ __all__ = [
     "KNOWN_TASK_NAMES",
     "MaterialsGeneratePayload",
     "OrchestrationPlanRunPayload",
+    "PostingTagBackfillPayload",
+    "PostingTagPayload",
     "SearchRefreshPayload",
     "StatusSyncPayload",
     "application_fill",
@@ -1095,6 +1370,8 @@ __all__ = [
     "linkedin_cookie_refresh",
     "materials_generate",
     "orchestration_plan_run",
+    "posting_tag",
+    "posting_tag_backfill",
     "search_daily_fanout",
     "search_refresh",
     "status_sync",

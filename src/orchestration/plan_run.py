@@ -579,7 +579,192 @@ def _default_score_fn(
                 "will land with RawJob.id and pre-submit may fail"
             )
 
+        # Phase 19.6: apply A1 fast-path rejects. The deterministic
+        # scorer already disqualifies on hard rules over the raw JD; the
+        # A1 layer adds snapshot-tag-based rejects that don't require
+        # re-parsing the JD text (e.g. ``sponsorship_signal=not_offered``).
+        # Disqualified breakdowns get ``disqualify_reasons`` extended; the
+        # cache write-through below still records the verdict for audit.
+        try:
+            _apply_a1_rejects(
+                breakdowns=breakdowns,
+                tenant_id=tenant_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- never bounce a successful score
+            logger.exception("plan_run: A1 fast-path rejects failed")
+
+        # Phase 19.4: write-through to job_posting_scores. Best-effort;
+        # cache misses just mean the next plan run rescores. Skipped
+        # when ``tenant_id`` is empty (legacy test stubs).
+        try:
+            _persist_score_cache(
+                breakdowns=breakdowns,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- never bounce a successful score
+            logger.exception("plan_run: score cache write-through failed")
+
     return breakdowns
+
+
+def _apply_a1_rejects(
+    *,
+    breakdowns: list[Any],
+    tenant_id: str,
+    profile_data: dict[str, Any],
+) -> None:
+    """Phase 19.6: walk the breakdowns, look up each snapshot's tags,
+    and flip the breakdown to ``disqualified=True`` when an A1 hard
+    rule rejects.
+
+    Hard rules are derived from the applicant profile (``sponsorship_required``
+    when ``profile.work_authorization`` indicates need for visa support,
+    ``no_clearance`` when ``profile.clearance=False``). The fast-path
+    module is the single source of truth for which tag values trigger
+    which rule; we only build the rule set here.
+    """
+    rules = _build_hard_rules(profile_data)
+    if not rules.rules:
+        return
+
+    persistable = [
+        b
+        for b in breakdowns
+        if getattr(b, "job_snapshot_id", None) and not getattr(b, "disqualified", False)
+    ]
+    if not persistable:
+        return
+
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.filter import fast_path  # noqa: PLC0415
+    from src.filter.score_cache import compute_profile_version  # noqa: PLC0415
+
+    profile_version = compute_profile_version(profile_data)
+    factory = get_session_factory()
+    with factory() as session:
+        for bd in persistable:
+            try:
+                decision = fast_path.evaluate(
+                    session,
+                    snapshot_id=_coerce_uuid(bd.job_snapshot_id),
+                    tenant_id=tenant_id,
+                    profile_id=getattr(bd, "profile_id", None) or "default",
+                    profile_version=profile_version,
+                    hard_rules=rules,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plan_run: fast_path.evaluate failed for snapshot=%s: %s",
+                    getattr(bd, "job_snapshot_id", None),
+                    exc,
+                )
+                continue
+            if decision.kind != "reject_a1":
+                continue
+            bd.disqualified = True
+            bd.final_score = 0.0
+            reason = f"A1:{decision.rule_id}:{decision.rule_description or ''}".strip(":")
+            existing = list(getattr(bd, "disqualify_reasons", []) or [])
+            if reason not in existing:
+                existing.append(reason)
+            bd.disqualify_reasons = existing
+
+
+def _build_hard_rules(profile_data: dict[str, Any]) -> Any:
+    """Derive the active A1 hard-rule set from the applicant profile.
+
+    Conservative defaults: rules are only installed when the profile
+    explicitly opts in (e.g. needs sponsorship, cannot get a US
+    clearance). Profiles that don't mention these flags get an empty
+    rule set so existing behaviour is preserved.
+    """
+    from src.filter import fast_path  # noqa: PLC0415
+
+    rules: list[fast_path.HardRule] = []
+    work_auth = (profile_data or {}).get("work_authorization") or {}
+    if isinstance(work_auth, dict):
+        needs_sponsorship = bool(
+            work_auth.get("needs_sponsorship")
+            or work_auth.get("requires_sponsorship")
+        )
+        if needs_sponsorship:
+            rules.append(fast_path.sponsorship_required_rule())
+
+    clearance = (profile_data or {}).get("clearance")
+    if clearance is False or (isinstance(clearance, dict) and clearance.get("eligible") is False):
+        rules.append(fast_path.clearance_excluded_rule())
+    return fast_path.HardRuleSet(rules=rules)
+
+
+def _persist_score_cache(
+    *,
+    breakdowns: list[Any],
+    tenant_id: str,
+    profile_id: str,
+    profile_data: dict[str, Any],
+) -> None:
+    """Phase 19.4 write-through.
+
+    One row per ``(snapshot, profile, profile_version, scorer_version)``;
+    breakdowns whose ``job_snapshot_id`` is unset (the snapshot has not
+    been enriched yet) are skipped because the cache key would be
+    ambiguous. The unique constraint guarantees idempotency under races.
+    """
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.filter.score_cache import (  # noqa: PLC0415
+        SCORER_VERSION,
+        compute_profile_version,
+        record_score,
+    )
+
+    persistable = [
+        b
+        for b in breakdowns
+        if getattr(b, "job_snapshot_id", None) and getattr(b, "job_id", None)
+    ]
+    if not persistable:
+        return
+
+    profile_version = compute_profile_version(profile_data)
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        for breakdown in persistable:
+            try:
+                record_score(
+                    session,
+                    tenant_id=tenant_id,
+                    posting_id=_coerce_uuid(breakdown.job_id),
+                    snapshot_id=_coerce_uuid(breakdown.job_snapshot_id),
+                    profile_id=profile_id,
+                    profile_version=profile_version,
+                    breakdown=breakdown,
+                    scorer_version=SCORER_VERSION,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plan_run: score cache row insert failed for snapshot=%s: %s",
+                    getattr(breakdown, "job_snapshot_id", None),
+                    exc,
+                )
+
+
+def _coerce_uuid(value: Any) -> Any:
+    """Pass UUIDs through; parse strings; otherwise return as-is so the
+    SQLAlchemy column raises a clear error rather than silently storing
+    junk. Tests inject ``str`` ids; production code is already ``UUID``."""
+    from uuid import UUID  # noqa: PLC0415
+
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return UUID(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _resolve_and_patch_posting_ids(

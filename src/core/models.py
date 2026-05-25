@@ -158,6 +158,12 @@ class JobPosting(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="new")
     latest_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Phase 19.1: denormalised mirror of the latest snapshot's A1 tags so
+    # the JobsView listing avoids the snapshot join. Source of truth still
+    # lives on the snapshot row (D029).
+    latest_tags: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
 
 class JobSnapshot(Base):
@@ -167,6 +173,10 @@ class JobSnapshot(Base):
     __table_args__ = (
         UniqueConstraint("posting_id", "content_hash", name="uq_job_snapshots_posting_hash"),
         Index("ix_job_snapshots_posting_scraped", "posting_id", "scraped_at"),
+        # Phase 19.1: backfill paginates by `(tenant_id, tagger_version)`; the
+        # status index drives the "Tagging…" banner count.
+        Index("ix_job_snapshots_tagger_version", "tenant_id", "tagger_version"),
+        Index("ix_job_snapshots_tags_status", "tenant_id", "tags_status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
@@ -186,6 +196,22 @@ class JobSnapshot(Base):
     application_url: Mapped[str | None] = mapped_column(Text)
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Phase 19.1: A1 objective tags computed by ``src.jobs.tagger``. The
+    # snapshot row is the source of truth; ``JobPosting.latest_tags`` is a
+    # denormalised mirror for cheap listing queries. ``tags_status`` is one of
+    # ``pending`` / ``computing`` / ``ready`` / ``failed`` and is consulted by
+    # the filter fast-path (D029). ``tagger_version`` lets a ``TAGGER_VERSION``
+    # bump enqueue paginated retag work without scanning the table.
+    tags: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    tagger_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    tags_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    tags_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SearchQuery(Base):
@@ -265,6 +291,81 @@ class RefreshTask(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobPostingScore(Base):
+    """Phase 19.1 (A2): cached score for one ``(snapshot, profile, scorer)``.
+
+    The unique key ``(tenant_id, snapshot_id, profile_id, profile_version,
+    scorer_version)`` is what makes the cache safe across scorer or profile
+    upgrades: bumping ``scorer_version`` or recomputing ``profile_version``
+    naturally lands a new row instead of overwriting an old one, so the audit
+    trail for "why was this judged this way" survives upgrades (D029).
+    """
+
+    __tablename__ = "job_posting_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "snapshot_id",
+            "profile_id",
+            "profile_version",
+            "scorer_version",
+            name="uq_job_posting_scores_cache_key",
+        ),
+        Index(
+            "ix_job_posting_scores_lookup",
+            "tenant_id",
+            "snapshot_id",
+            "profile_id",
+            "profile_version",
+            "scorer_version",
+        ),
+        Index(
+            "ix_job_posting_scores_profile_computed",
+            "tenant_id",
+            "profile_id",
+            "computed_at",
+        ),
+        Index(
+            "ix_job_posting_scores_verdict_computed",
+            "tenant_id",
+            "verdict",
+            "computed_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    posting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "job_postings.id",
+            name="fk_job_posting_scores_posting",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "job_snapshots.id",
+            name="fk_job_posting_scores_snapshot",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    profile_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    scorer_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    agent_version: Mapped[str | None] = mapped_column(String(32))
+    model_id: Mapped[str | None] = mapped_column(String(120))
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    final_score: Mapped[float | None] = mapped_column(Float)
+    score_breakdown: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class TaskRecord(Base):

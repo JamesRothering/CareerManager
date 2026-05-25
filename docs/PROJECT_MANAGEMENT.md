@@ -4,11 +4,11 @@ This document is the live operating context for AutoApply. It should stay short,
 
 ## Current State
 
-AutoApply is complete through **Phase 18: Worker Activation, Reliability, Parallelism, Cleanup** (2026-05-21), itself layered on top of Phase 17.9.
+AutoApply is complete through **Phase 19: Per-Posting Tag Cache & Filter Fast Path** (2026-05-25), itself layered on top of Phase 18 (Worker Activation, Reliability, Parallelism, Cleanup).
 
-The product currently supports job discovery, job-index freshness, fit scoring and explanations, materials generation (now async with structured task results), document-library curation, automation plans, review queues, gated submission, application tracking, multi-vendor LLM routing with global + per-provider concurrency caps, per-provider model catalogs surfaced in the Settings UI, an optional cheap-model tier for extraction-style work, background task execution with worker bodies that no longer return fake `"scheduled"`/`"stubbed"` success, durable JSONB-safe task results via `TaskRecord.result`, dead-letter-queue plumbing for tasks that exhaust `max_retries`, and an automatic artifact-cleanup pipeline that protects DB-referenced files while quarantining orphans / tmp / failed-artifact remnants without letting old task audit rows defeat soft-delete retention.
+The product currently supports job discovery, job-index freshness, fit scoring and explanations, materials generation (now async with structured task results), document-library curation, automation plans, review queues, gated submission, application tracking, multi-vendor LLM routing with global + per-provider concurrency caps, per-provider model catalogs surfaced in the Settings UI, an optional cheap-model tier for extraction-style work, background task execution with worker bodies that no longer return fake `"scheduled"`/`"stubbed"` success, durable JSONB-safe task results via `TaskRecord.result`, dead-letter-queue plumbing for tasks that exhaust `max_retries`, an automatic artifact-cleanup pipeline that protects DB-referenced files while quarantining orphans, snapshot-level objective tags driving the filter fast-path, and a saved-search registry that lets Beat fan out per-profile refreshes through real `search.refresh` children.
 
-The next planned hardening area is **Phase 19: Per-Posting Tag Cache & Filter Fast Path** -- drop the search-result-set cache in favour of snapshot-level objective tags and profile/scorer-version score caches, so the same JD snapshot is not re-scored on every search. Phase 19 also owns the saved-search registry needed for `search.daily_fanout` / `search.refresh` to become real fanout tasks. **Phase 20: Custom Job Sources (Connectors)** introduces URL-safe user-added company careers sites (Nvidia, Microsoft, Stripe, etc.) on top of the LinkedIn / ATS intake we ship today, with bounded multi-source search and a feature-gated LLM template DSL for the long tail. Multi-tenancy & auth hardening, originally Phase 18, now lands as **Phase 21** once the personal-version product is feature-complete. Outcome status sync is a later ATS-first feature: poll supported ATS/application portals first, then add email / HR-reply ingestion.
+The next planned area is **Phase 20: Custom Job Sources (Connectors)** -- URL-safe user-added company careers sites (Nvidia, Microsoft, Stripe, etc.) on top of the LinkedIn / ATS intake we ship today, with bounded multi-source search and a feature-gated LLM template DSL for the long tail. Multi-tenancy & auth hardening, originally Phase 18, now lands as **Phase 21** once the personal-version product is feature-complete. Outcome status sync is a later ATS-first feature: poll supported ATS/application portals first, then add email / HR-reply ingestion.
 
 ## Verification Baseline
 
@@ -16,13 +16,11 @@ Last local verification in this workspace:
 
 | Check | Result |
 |---|---|
-| `uv run pytest -q` | 1720 passed, 1 skipped |
+| `uv run pytest -q` | Phase-19 new tests pass (tagger 29, tag service 4, posting.tag task 6, score cache 7, fast-path 9); full-suite baseline regression to be re-run against Postgres |
 | `npm run build` | Passed; existing Vite chunk-size warning remains |
-| `uv run ruff check` on changed Python files | Passed |
-| `python -m py_compile` on plan-run modules | Passed |
-| Phase 18 worker bodies | Fake `"scheduled"` / `"stubbed"` returns closed out; unsupported browser/status-sync paths now return explicit `not_implemented`; `application_status_sync` removed from Beat |
+| Phase 19 worker bodies | `posting.tag` / `posting.tag_backfill` registered; `search.refresh` resolves saved-search profiles; `search.daily_fanout` enqueues per-profile children. No more `not_implemented` returns from search-side tasks. |
 
-When schema changes are present, run `uv run alembic upgrade head` before launching the web app. The current head is `b8d2f9e15c33`, which adds the dead-letter-queue columns on `tasks` (Phase 18.3). The Phase 18 schema chain is: `e7c3a5b91f48` (user_documents) → `f4e8c1d2a907` (cleanup_runs + cleanup_items + applications.deleted_at) → `a1c7b3e54f08` (tasks.result) → `b8d2f9e15c33` (tasks.last_attempted_at + dead_lettered_at + dlq_reason).
+When schema changes are present, run `uv run alembic upgrade head` before launching the web app. The current head is `d4e2a7c19f08`, which adds the Phase 19.1 snapshot-tag columns and `job_posting_scores` table. The Phase 18 → 19 chain is: `e7c3a5b91f48` (user_documents) → `f4e8c1d2a907` (cleanup audit) → `a1c7b3e54f08` (tasks.result) → `b8d2f9e15c33` (DLQ columns) → `c3a7e1f2b048` (applications.fill_details) → `d4e2a7c19f08` (snapshot tags + job_posting_scores).
 
 ## Active Roadmap
 
@@ -31,7 +29,7 @@ When schema changes are present, run `uv run alembic upgrade head` before launch
 | 17.8 | Material strategy defaults, user document library, plan-level material overrides, replace-materials review actions | Complete |
 | 17.9 | LLM provider expansion (more vendors, per-provider model catalog + UI picker, small-model tier, user-defined custom providers) | Complete |
 | 18 | Worker activation, reliability, parallelism, cleanup | Complete |
-| 19 | Per-Posting Tag Cache & Filter Fast Path: drop search-result TTL cache; tags keyed by snapshot, scores keyed by snapshot + profile_version + scorer_version | Planned |
+| 19 | Per-Posting Tag Cache & Filter Fast Path: dropped search-result TTL cache; tags keyed by snapshot, scores keyed by snapshot + profile_version + scorer_version; saved-search registry fanout | Complete (2026-05-25) |
 | 20 | Custom Job Sources (Connectors): URL-safe user sources, ATS auto-detection, multi-source search, and feature-gated LLM template DSL | Planned |
 | 21 | Multi-tenancy and auth hardening (deferred from Phase 18 → 19 → 20) | Future |
 | Future | ATS-first application status sync, then email / HR-reply ingestion | Backlog |

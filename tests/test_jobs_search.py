@@ -195,25 +195,32 @@ async def test_first_run_scrapes_and_persists(store: _StubStore) -> None:
     assert store.runs[0][1] == "fresh"
 
 
-async def test_second_run_hits_cache(store: _StubStore) -> None:
-    scraped = [_SimplePosting(source="linkedin", source_id="1", company="Acme")]
-
+async def test_second_run_refetches_upstream(store: _StubStore) -> None:
+    """Phase 19.5: every search re-fetches. The whole-result TTL
+    short-circuit is gone (D029); the previous behaviour was hiding
+    newly posted jobs between scrapes."""
     first = await cached_search(
         store=store, cache=None, source="linkedin", params={"keywords": "swe"},
-        fetch_fn=lambda: scraped,
+        fetch_fn=lambda: [_SimplePosting(source="linkedin", source_id="1", company="Acme")],
     )
     assert first.cached is False
 
-    def boom() -> list:
-        raise AssertionError("must not hit network on cache hit")
+    calls = {"n": 0}
+
+    def fetch() -> list:
+        calls["n"] += 1
+        return [
+            _SimplePosting(source="linkedin", source_id="1", company="Acme"),
+            _SimplePosting(source="linkedin", source_id="2", company="Beta"),
+        ]
 
     second = await cached_search(
         store=store, cache=None, source="linkedin", params={"keywords": "swe"},
-        fetch_fn=boom,
+        fetch_fn=fetch,
     )
-    assert second.cached is True
-    assert second.stale is False
-    assert [p.source_id for p in second.postings] == ["1"]
+    assert calls["n"] == 1
+    assert second.cached is False
+    assert sorted(p.source_id for p in second.postings) == ["1", "2"]
 
 
 async def test_force_refresh_bypasses_cache(store: _StubStore) -> None:
@@ -316,7 +323,10 @@ async def test_old_freshness_window_invalidates(store: _StubStore) -> None:
 
 
 async def test_normalized_params_collide_with_tracking(store: _StubStore) -> None:
-    """Two calls with different tracking IDs hit the same cached query."""
+    """Phase 19.5: two calls with different tracking IDs still target
+    the same ``SearchQuery`` row (the normalizer strips tracking
+    params), but the second call also re-fetches upstream rather than
+    short-circuiting on TTL."""
     await cached_search(
         store=store, cache=None, source="linkedin",
         params={"keywords": "swe", "currentJobId": "111", "origin": "JYMBII"},
@@ -325,9 +335,12 @@ async def test_normalized_params_collide_with_tracking(store: _StubStore) -> Non
     out = await cached_search(
         store=store, cache=None, source="linkedin",
         params={"keywords": "swe", "currentJobId": "999", "trk": "x"},
-        fetch_fn=lambda: (_ for _ in ()).throw(AssertionError("must hit cache")),
+        fetch_fn=lambda: [_SimplePosting(source="linkedin", source_id="1", company="A")],
     )
-    assert out.cached is True
+    # The two calls share one SearchQuery row (1 query in store).
+    assert len(store.queries) == 1
+    # But the second call still re-fetched.
+    assert out.cached is False
 
 
 async def test_lock_contention_returns_cached_with_stale_flag(store: _StubStore) -> None:

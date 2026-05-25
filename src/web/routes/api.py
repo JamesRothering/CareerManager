@@ -1627,6 +1627,92 @@ async def job_index_posting_freshness(
     return posting_freshness(posting_id=posting_id, context=context)
 
 
+# ---- Phase 19.7: tag chips + retag + backfill banner -----------------
+
+
+@router.post("/jobs/postings/{posting_id}/retag")
+async def post_posting_retag(posting_id: str) -> dict:
+    """Phase 19.7: enqueue a one-off ``posting.tag`` for this posting's
+    latest snapshot.
+
+    Returns ``{task_id, snapshot_id}`` so the SPA can poll the existing
+    task-result endpoint. If the posting has no snapshot yet (a search
+    has returned the row but the JD has not been enriched), the call is
+    a no-op with ``status="no_snapshot"`` so the operator gets feedback
+    instead of a silent 404.
+    """
+    from uuid import UUID  # noqa: PLC0415
+
+    from src.core.config import load_config  # noqa: PLC0415
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.core.models import JobPosting  # noqa: PLC0415
+    from src.tasks.app import celery_app  # noqa: PLC0415
+
+    try:
+        posting_uuid = UUID(posting_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_posting_id"}) from exc
+
+    factory = get_session_factory(load_config())
+    with factory() as session:
+        posting = session.get(JobPosting, posting_uuid)
+        if posting is None:
+            raise HTTPException(status_code=404, detail={"error": "posting_not_found"})
+        snapshot_id = posting.latest_snapshot_id
+
+    if snapshot_id is None:
+        return {
+            "ok": False,
+            "status": "no_snapshot",
+            "posting_id": posting_id,
+        }
+
+    async_result = celery_app.send_task(
+        "posting.tag",
+        kwargs={"snapshot_id": str(snapshot_id)},
+        queue="search",
+    )
+    return {
+        "ok": True,
+        "status": "enqueued",
+        "task_id": str(getattr(async_result, "id", "")),
+        "posting_id": posting_id,
+        "snapshot_id": str(snapshot_id),
+    }
+
+
+@router.get("/jobs/tagging/status")
+async def get_tagging_status() -> dict:
+    """Phase 19.7: backlog gauge for the JobsView "Tagging…" banner.
+
+    Returns ``{pending: int, tagger_version: int}``. ``pending`` counts
+    snapshots whose ``tags_status in ('pending', 'computing')``; the UI
+    shows the banner when the value is non-zero.
+    """
+    from src.core.config import load_config  # noqa: PLC0415
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.jobs.tag_service import count_pending  # noqa: PLC0415
+    from src.jobs.tagger import TAGGER_VERSION  # noqa: PLC0415
+
+    factory = get_session_factory(load_config())
+    try:
+        with factory() as session:
+            pending = count_pending(session, tenant_id="default")
+    except Exception as exc:  # noqa: BLE001
+        # Migration not applied? Surface zero so the banner stays hidden.
+        return {
+            "pending": 0,
+            "tagger_version": TAGGER_VERSION,
+            "ok": False,
+            "warning": str(exc),
+        }
+    return {
+        "pending": pending,
+        "tagger_version": TAGGER_VERSION,
+        "ok": True,
+    }
+
+
 @router.delete("/cache/{namespace}")
 async def cache_clear_namespace_endpoint(
     namespace: str, payload: ClearCachePayload | None = None
