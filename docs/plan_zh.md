@@ -14,13 +14,13 @@
 | 用户面向的部署 | `docs/DEPLOYMENT.md` |
 | 本文 | 战略、历史路线图背景、长文规划说明 |
 
-最近更新：**2026-05-20（Phase 18 已落地，Phase 19/20 仍为规划）**。当前状态、验收基线和下一步路线图以 `docs/PROJECT_MANAGEMENT.md` 为准；本文保留长文规划和历史设计理由。v3.1 在 v3 基础上做了四处校准：
+最近更新：**2026-05-27（Phase 19 已落地，Phase 20 仍为规划）**。当前状态、验收基线和下一步路线图以 `docs/PROJECT_MANAGEMENT.md` 为准；本文保留长文规划和历史设计理由。v3.1 在 v3 基础上做了四处校准：
 (a) Phase 14 任务队列改用 Celery（不再自建 task model + queue transport + worker runtime；见 D025），APScheduler 也随之退场，由 Celery Beat 承担 cron trigger；
 (b) Phase 14 前插入 13.9 子阶段，给所有 Phase 11 及以前的遗留表做一次性 `tenant_id` retrofit migration，把 D020 的"纪律"变成 schema 强制（见 D026）；
 (c) HITL gate 后端从单进程文件 JSON 迁到 Celery 任务态 / Postgres 持久化层，避免 Phase 14 多 worker 与 Phase 17 review queue 各自再造（并入 14.x，见 D026）；
 (d) Phase 15.3 LaTeX 范围澄清：`src/documents/latex_engine.py` 已存在，Phase 15 不是"从零搭 LaTeX"，而是"加模板包规范 + manifest + adapter"。
 
-2026-05-19 这次刷新记录 Phase 17.9 已完成：provider 层现在覆盖 OpenAI、Anthropic、Gemini、DeepSeek、Moonshot/Kimi、Qwen、xAI Grok、Groq、Mistral、OpenRouter、Ollama、Claude CLI、Codex CLI，以及用户自定义的 OpenAI-compatible provider。同次刷新在 Phase 18（worker 激活 / 可靠性 / 并行 / 清理）和多租户工作之间插入了 **Phase 19**（Per-Posting Tag Cache & Filter Fast Path，重启 2026-05-16 的缓存计划）和 **Phase 20**（用户自定义 Job Sources / Connectors）。多租户与 Auth 加固后移为 **Phase 21**。2026-05-20 进一步细化 Phase 18：worker stub 必须收口或显式返回 `not_implemented`、任务结果和 DLQ 必须持久化、并行必须带全局/provider 限流、同步 fallback 只做短期调试，垃圾清理必须是自动 quarantine + 审计机制。Phase 18 现已按这个范围落地，并修掉 legacy submit 入口在真实 ATS 提交前标 submitted 的安全问题。同日也细化 Phase 19：搜索仍然每次打上游，但 A1 tags 绑定 JD snapshot，A2 score cache 带 profile/scorer 版本，pending/failed tags 降级慢路径而不误 reject；`search.daily_fanout` / `search.refresh` 所需的 saved-search registry fanout 也归入 Phase 19。Phase 20 同步加上 URL 安全边界、source 状态机、多源限流/部分失败、受限模板 DSL 和默认关闭的 LLM 模板 feature flag。Outcome status sync 则放到更后面，先做 ATS / application portal 拉取，再接 email / HR-reply ingestion。
+2026-05-19 这次刷新记录 Phase 17.9 已完成：provider 层现在覆盖 OpenAI、Anthropic、Gemini、DeepSeek、Moonshot/Kimi、Qwen、xAI Grok、Groq、Mistral、OpenRouter、Ollama、Claude CLI、Codex CLI，以及用户自定义的 OpenAI-compatible provider。同次刷新在 Phase 18（worker 激活 / 可靠性 / 并行 / 清理）和多租户工作之间插入了 **Phase 19**（Per-Posting Tag Cache & Filter Fast Path，重启 2026-05-16 的缓存计划）和 **Phase 20**（用户自定义 Job Sources / Connectors）。多租户与 Auth 加固后移为 **Phase 21**。2026-05-20 进一步细化 Phase 18：worker stub 必须收口或显式返回 `not_implemented`、任务结果和 DLQ 必须持久化、并行必须带全局/provider 限流、同步 fallback 只做短期调试，垃圾清理必须是自动 quarantine + 审计机制。Phase 18 已按这个范围落地，并修掉 legacy submit 入口在真实 ATS 提交前标 submitted 的安全问题。Phase 19 也已经落地：搜索仍然每次打上游，A1 tags 绑定 JD snapshot，A2 score cache 带 profile/scorer 版本，pending/failed tags 降级慢路径而不误 reject，`search.daily_fanout` / `search.refresh` 已接到 saved-search registry fanout，并补上内置模板与空 profile 首次部署加固。Phase 20 同步加上 URL 安全边界、source 状态机、多源限流/部分失败、受限模板 DSL 和默认关闭的 LLM 模板 feature flag。Outcome status sync 则放到更后面，先做 ATS / application portal 拉取，再接 email / HR-reply ingestion。
 
 ---
 
@@ -780,15 +780,15 @@ review loop；项目 memory 在 2026 年 5 月中旬如实总结了一句话："
 
 延后到后续 phase 的未决问题：
 - 持久任务进度 UI（实时 SSE 流式，不是轮询）。Phase 18 只做 polling。
-- Saved-search registry fanout：Phase 19 应持久化 saved-search 定义，并把
-  `search.daily_fanout` / `search.refresh` 接到真实枚举和刷新逻辑。
+- Saved-search registry fanout 已在 Phase 19 落地；后续重点应是更完整的 UI 管理
+  和按 source 细分的 schedule，而不是 no-op task wiring。
 - Application status sync：先做支持 ATS / application portal 的状态拉取，再把
   email / HR-reply ingestion 作为第二类来源接入。
 - 给未来 ops dashboard 用的跨租户 DLQ surfacing。
 - 反爬 session pool —— 路由到 N 个独立 session 就能让 LinkedIn 详情页并行
   变安全。本阶段不做（和 Phase 20 Tier 2 的风险有重叠）。
 
-### Phase 19: Per-Posting Tag Cache & Filter Fast Path（~2 周）
+### Phase 19: Per-Posting Tag Cache & Filter Fast Path（已于 2026-05-27 落地）
 
 > **历史**：这份计划最早是 2026-05-16 排上的 Phase 19（"Per-Posting Tag
 > Cache & Filter Fast Path"），先后被 17.9 LLM Provider Expansion 和 18/19
@@ -828,7 +828,7 @@ TTL 短路会让一个结果集在 1 小时内整体生效 —— 这意味着 p
   `posting.tag_backfill` 分页后台任务：每批处理 100/500 个 `tagger_version < TAGGER_VERSION`
   的 snapshot；UI 显示"正在打标"banner；backfill 未完成时 fast-path 降级到慢路径，
   不阻塞普通搜索。
-- **19.3b** Saved-search registry fanout：持久化 saved-search 定义（`query_id -> source / keywords / location / filters / max_pages / profile`），让 `search.daily_fanout` 能枚举 active searches 并入队真正的 `search.refresh` 子任务。这样既保留 Phase 19 “每次搜索都打上游”的策略，也移除剩余的 scheduled-search no-op task body。
+- **19.3b** Saved-search registry fanout：已持久化 saved-search 定义（`profile_id -> source / keywords / location / filters / max_pages`），让 `search.daily_fanout` 能枚举 active searches 并入队真正的 `search.refresh` 子任务。这样既保留 Phase 19 “每次搜索都打上游”的策略，也移除剩余的 scheduled-search no-op task body。
 - **19.4** `job_posting_scores` write-through：Phase 16 的 Filter Agent
   把算出的 verdict 按 `(tenant_id, snapshot_id, profile_id, profile_version,
   scorer_version)` 写回；读路径只复用当前 `profile_version` + 当前 `scorer_version`
@@ -850,6 +850,7 @@ TTL 短路会让一个结果集在 1 小时内整体生效 —— 这意味着 p
 - **19.8** 文档：README / PROJECT_MANAGEMENT / CHANGELOG；新加一条
   Decision 记录 A1+A2 拆分、snapshot 级 tags、`profile_version = sha256(canonical_json(profile))[:12]`
   的派生、`scorer_version` 缓存键，以及 Phase 19 不承诺跨 source canonical dedupe。
+- **19.9** 部署加固：内置默认 DOCX 模板纳入 git；默认模板包只在首次本地初始化时补齐，之后尊重用户删除；无效模板包会被跳过而不是打爆模板 API；ProfileView 能处理完全没有 profile 的状态；缺 scoring profile 时定时 plan run 在抓取前返回 `status="no_profile"`。
 
 **需要明示的行为变化**：搜索不再用 TTL 短路了，每次搜索都打上游。这个改变
 有合理性 —— 之前那个 TTL 在掩盖新 posting；per-posting 缓存把*分析*热路径
@@ -1014,8 +1015,8 @@ Tier 1 发布。
 
 ### 时间表
 
-截至 2026-05-20：Phase 1-18 已在 Phase 18 分支落地；下一步是 Phase 19
-（worker 系统审计和 Phase 18 加固之后的缓存/过滤模型重构）。
+截至 2026-05-27：Phase 1-19 已在 Phase 19 分支落地；下一步是 Phase 20
+（per-posting cache 与首次部署加固之后的自定义来源/connector 工作）。
 
 | Phase | 范围 | 工时 | 状态 |
 |---|---|---|---|
@@ -1030,16 +1031,16 @@ Tier 1 发布。
 | 17.8 | Material Strategy & Document Library | 1 周 | 已完成 |
 | 17.9 | LLM Provider Expansion | 0.5 周 | 已完成 |
 | **18** | **Worker 激活 / 可靠性 / 并行 / 垃圾清理** | **2.5–3 周** | **已完成** |
-| 19 | Per-Posting Tag Cache & Filter Fast Path | 2 周 | 下一步 |
+| **19** | **Per-Posting Tag Cache & Filter Fast Path** | **2 周** | **已完成** |
 | 20 | 用户自定义 Job Sources（Connectors）—— URL safety + ATS 检测 + 多源搜索 + 模板 DSL | 3–3.5 周 | 已规划 |
 | 21 | 多租户 & Auth 加固 | 2.5 周 | 已推迟（等个人版成熟后再做） |
 
-个人版产品到 Phase 18 已 feature-complete 且完成一轮 worker/运维加固。Phase 19
-把搜索缓存模型换掉，让同一 snapshot + 同一 profile/scorer 版本不会重复评分；
+个人版产品到 Phase 19 已 feature-complete 且完成一轮 worker/运维加固。Phase 19
+已把搜索缓存模型换掉，让同一 snapshot + 同一 profile/scorer 版本不会重复评分；
 Phase 20 把"用户自定义公司招聘站"这个能力打通；Phase 21 才激活 Phase 12-20
 一路留着的多租户底座。Phase 18 是在 Phase 17 收尾时做完一次 worker 系统
 审计之后确定的 —— 那次审计发现 task body 都是 stub、没有 cleanup 策略、
-并行机会从未被探索过。Phase 19 重启了 2026-05-16 排上但被 17.9/18 重排
+并行机会从未被探索过。Phase 19 已重启 2026-05-16 排上但被 17.9/18 重排
 挤掉两次的缓存计划。Phase 20 承接"我就要 Nvidia"那类用户诉求，做成两层
 架构。Phase 21 已经被推迟了四次（18 → 19 → 20 → 21）—— 每次推迟都让
 schema 层的 `tenant_id` 纪律继续保持，最终激活成本可控。

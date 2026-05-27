@@ -15,7 +15,7 @@ To reduce duplication, use the following source-of-truth split:
 | User-facing setup | `docs/DEPLOYMENT.md` |
 | This file | Strategy, historical roadmap context, long-form planning notes |
 
-Last refreshed: **2026-05-20 (Phase 18 shipped; Phase 19/20 remain planned)**. Current operating status, verification, and next roadmap live in `docs/PROJECT_MANAGEMENT.md`. This plan keeps the long-form rationale. v3.1 calibrated the roadmap in four places:
+Last refreshed: **2026-05-27 (Phase 19 shipped; Phase 20 remains planned)**. Current operating status, verification, and next roadmap live in `docs/PROJECT_MANAGEMENT.md`. This plan keeps the long-form rationale. v3.1 calibrated the roadmap in four places:
 (a) Phase 14 task queue switches to Celery (the original "self-built task model +
 queue transport + worker runtime" plan is dropped; see D025). APScheduler is
 retired in favor of Celery Beat for cron triggers.
@@ -30,7 +30,7 @@ reinvent it (see D026).
 exists, so Phase 15 is not "build LaTeX from scratch" — it is "add the template
 package spec + manifest + adapter convention on top of an existing engine."
 
-The 2026-05-19 refresh records Phase 17.9 as complete: the provider layer now covers OpenAI, Anthropic, Gemini, DeepSeek, Moonshot/Kimi, Qwen, xAI Grok, Groq, Mistral, OpenRouter, Ollama, Claude CLI, Codex CLI, and user-defined OpenAI-compatible providers. The same refresh inserted **Phase 19** (Per-Posting Tag Cache & Filter Fast Path — reinstating the 2026-05-16 cache plan) and **Phase 20** (Custom Job Sources / Connectors) between Phase 18 (worker activation / reliability / parallelism / cleanup) and the multi-tenancy work, which now lands as **Phase 21**. The 2026-05-20 refinement tightened Phase 18: worker stubs must close out or return explicit `not_implemented`, task results and DLQ state must be durable, parallelism needs global/provider limits, sync fallback is short-lived debug only, and cleanup must be automatic quarantine + audit. Phase 18 has now shipped against that scope, including a safety fix so legacy submit paths no longer mark rows submitted before real ATS submission. The same refinement also tightened Phase 19: searches still hit upstream every time, but A1 tags bind to JD snapshots, A2 score cache keys include profile/scorer versions, pending/failed tags fall back to the slow path instead of rejecting, and saved-search registry fanout becomes the proper home for `search.daily_fanout` / `search.refresh`. Phase 20 also gains URL safety boundaries, a source state machine, multi-source rate limits / partial failure, a constrained template DSL, and a feature-gated LLM-template tier. Outcome status sync is intentionally later: start with supported ATS/application-portal polling, then add email / HR-reply ingestion.
+The 2026-05-19 refresh records Phase 17.9 as complete: the provider layer now covers OpenAI, Anthropic, Gemini, DeepSeek, Moonshot/Kimi, Qwen, xAI Grok, Groq, Mistral, OpenRouter, Ollama, Claude CLI, Codex CLI, and user-defined OpenAI-compatible providers. The same refresh inserted **Phase 19** (Per-Posting Tag Cache & Filter Fast Path — reinstating the 2026-05-16 cache plan) and **Phase 20** (Custom Job Sources / Connectors) between Phase 18 (worker activation / reliability / parallelism / cleanup) and the multi-tenancy work, which now lands as **Phase 21**. The 2026-05-20 refinement tightened Phase 18: worker stubs must close out or return explicit `not_implemented`, task results and DLQ state must be durable, parallelism needs global/provider limits, sync fallback is short-lived debug only, and cleanup must be automatic quarantine + audit. Phase 18 has now shipped against that scope, including a safety fix so legacy submit paths no longer mark rows submitted before real ATS submission. Phase 19 has also shipped: searches still hit upstream every time, A1 tags bind to JD snapshots, A2 score cache keys include profile/scorer versions, pending/failed tags fall back to the slow path instead of rejecting, saved-search registry fanout is wired through `search.daily_fanout` / `search.refresh`, and the branch includes deployment hardening for built-in templates and empty-profile first runs. Phase 20 also gains URL safety boundaries, a source state machine, multi-source rate limits / partial failure, a constrained template DSL, and a feature-gated LLM-template tier. Outcome status sync is intentionally later: start with supported ATS/application-portal polling, then add email / HR-reply ingestion.
 
 ---
 
@@ -974,8 +974,8 @@ touch disjoint files. 18.6 closes after the async path soaks.
 Open questions deferred to later phases:
 - Persistent task progress UI (real-time SSE streaming, not poll-based).
   Phase 18 only does poll.
-- Saved-search registry fanout: Phase 19 should persist saved-search definitions
-  and wire `search.daily_fanout` / `search.refresh` to enumerate and refresh them.
+- Saved-search registry fanout shipped in Phase 19; future work should focus on
+  richer UI management and source-scoped schedules rather than no-op task wiring.
 - Application status sync: start with supported ATS/application-portal polling,
   then add email / HR-reply ingestion as a second source.
 - Cross-tenant DLQ surfacing for the future ops dashboard.
@@ -983,7 +983,7 @@ Open questions deferred to later phases:
   become safe by routing through N independent sessions. Out of scope
   here (overlaps with Phase 20 Tier 2 risks).
 
-### Phase 19: Per-Posting Tag Cache & Filter Fast Path (~2 weeks)
+### Phase 19: Per-Posting Tag Cache & Filter Fast Path (shipped 2026-05-27)
 
 > **History**: this was previously planned as Phase 19 in May 2026
 > ("Per-Posting Tag Cache & Filter Fast Path"), then displaced first
@@ -1034,8 +1034,8 @@ evidence appears.
   `posting.tag_backfill`: process 100/500 snapshots per batch where
   `tagger_version < TAGGER_VERSION`; show a "tagging in progress" UI banner;
   fall back to the slow path while backfill drains instead of blocking search.
-- **19.3b** Saved-search registry fanout: persist saved-search definitions
-  (`query_id -> source / keywords / location / filters / max_pages / profile`) so
+- **19.3b** Saved-search registry fanout: persisted saved-search definitions
+  (`profile_id -> source / keywords / location / filters / max_pages`) so
   `search.daily_fanout` can enumerate active searches and enqueue real
   `search.refresh` children. This preserves the Phase 19 rule that every search
   hits upstream while removing the remaining no-op scheduled-search task bodies.
@@ -1066,6 +1066,12 @@ evidence appears.
   `profile_version = sha256(canonical_json(profile))[:12]`, the `scorer_version`
   cache key, and the fact that Phase 19 does not promise cross-source canonical
   dedupe.
+- **19.9** Deployment hardening: built-in default DOCX templates are tracked in
+  git; default template packages initialize once and later user deletion is
+  respected; invalid template packages are skipped instead of crashing the
+  template API; ProfileView handles an empty profile store; scheduled plan runs
+  return `status="no_profile"` before scraping when the scoring profile is
+  missing.
 
 **Behavior change to call out**: searches no longer short-circuit on
 TTL — every search hits the upstream. Justified because the cost was
@@ -1273,8 +1279,8 @@ per-tenant directory split + keyring entry renaming). 21.1 / 21.3 /
 
 ### Timeline summary
 
-Status as of 2026-05-20: Phases 1-18 are shipped on the Phase 18 branch.
-Phase 19 is the next milestone after the worker-system audit and Phase 18
+Status as of 2026-05-27: Phases 1-19 are shipped on the Phase 19 branch.
+Phase 20 is the next milestone after the per-posting cache and deployment
 hardening pass.
 
 | Phase | Scope | Est. | Status |
@@ -1290,18 +1296,18 @@ hardening pass.
 | 17.8 | Material Strategy & Document Library | 1w | Done |
 | 17.9 | LLM Provider Expansion | 0.5w | Done |
 | **18** | **Worker Activation, Reliability, Parallelism, Cleanup** | **2.5–3w** | **Done** |
-| 19 | Per-Posting Tag Cache & Filter Fast Path | 2w | Next |
+| **19** | **Per-Posting Tag Cache & Filter Fast Path** | **2w** | **Done** |
 | 20 | Custom Job Sources (Connectors) — URL safety + ATS detection + multi-source search + template DSL | 3-3.5w | Planned |
 | 21 | Multi-Tenancy & Auth Hardening | 2.5w | Deferred (post personal-version maturity) |
 
 The personal-version product (single user, local-first, no auth) is
-feature-complete and operationally hardened through Phase 18. Phase 19 swaps
+feature-complete and operationally hardened through Phase 19. Phase 19 swapped
 the search-cache model so the same snapshot + same profile/scorer version does
 not repeat across searches; Phase 20 opens the system to user-added company
 careers sites; Phase 21 finally activates the multi-tenancy plumbing that
 Phases 12-20 have been carrying dormant. Phase 18 was scoped after a
 Phase-18-prep audit found the task bodies were stubs, no cleanup policy existed,
-and parallelism opportunities were unexplored. Phase 19 reinstates the
+and parallelism opportunities were unexplored. Phase 19 reinstated the
 2026-05-16 cache plan that was displaced twice during the 17.9/18/19 reshuffles.
 Phase 20 captures the "let me add Nvidia" class of user request behind a tiered
 architecture. Phase 21 has been deferred four times now (18→19→20→21) — each

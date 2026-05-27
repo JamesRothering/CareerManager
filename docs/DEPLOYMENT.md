@@ -11,7 +11,8 @@ AutoApply currently supports:
 - LinkedIn search with external ATS redirect discovery and durable Job Index records
 - Materials workspace for tailored resume and cover letter generation per job or pasted JD
 - Document library for trusted resumes/cover letters, generated artifact promotion, and material strategy defaults
-- DOCX-first template packages with manifest-driven styles, capacity, preview, validation, and uploads
+- DOCX-first template packages with manifest-driven styles, capacity, preview, validation, uploads, and bundled built-in defaults
+- Snapshot-level job tags plus per-profile/per-scorer score caching for repeated searches
 - QA template loading from `qa_bank`
 - Browser automation for Greenhouse, Lever, and Ashby applications
 - Multi-vendor LLM routing across REST providers, local Ollama, local CLIs, and user-defined OpenAI-compatible endpoints
@@ -217,7 +218,7 @@ What `init` does:
 - validates `config/settings.yaml` and `.env`
 - tests database connectivity
 - runs Alembic migrations
-- imports or creates `data/profile/profile.yaml`
+- imports or creates the selected applicant profile under `data/profile/profiles/<profile_id>.yaml`
 - checks configured LLM provider availability where possible
 - stores preferred primary/fallback LLM settings when you pass `--llm-primary` / `--llm-fallback`
 
@@ -275,7 +276,6 @@ Even after provider calls fail, several features still degrade gracefully:
 
 Main files you will edit:
 
-- `data/profile/profile.yaml`
 - `data/profile/profiles/<profile_id>.yaml`
 - `data/templates/<document_type>/<template_id>/manifest.json`
 - `config/settings.yaml`
@@ -284,10 +284,22 @@ Main files you will edit:
 
 Guidance:
 
-- put your identity, education, experiences, projects, skills, `story_bank`, and `qa_bank` in `profile.yaml`
+- put your identity, education, experiences, projects, skills, `story_bank`, and `qa_bank` in a profile under `data/profile/profiles/`
 - keep resume and cover letter templates as packages under `data/templates/`
 - put ATS company slugs in `companies.yaml`
 - define matching filters in `filters.yaml`
+
+Profile notes:
+
+- A fresh deployment can start with no applicant profile. The `/profile` page shows an empty state and lets you create, upload, or import one from the document library.
+- Scheduled plan runs return `status="no_profile"` and skip scraping/scoring until the requested profile exists. This avoids spending search/API work on a machine that has not been initialized with applicant data.
+- `data/profile/profile.yaml` is only the legacy single-file layout. When present on a new profile store, AutoApply migrates it once into `data/profile/profiles/default.yaml`.
+
+Template notes:
+
+- The repo includes the built-in DOCX defaults: `data/templates/resume/ats_single_column_v1/template.docx` and `data/templates/cover_letter/classic_v1/template.docx`.
+- Built-in default template packages are initialized once per local checkout. If a built-in package is missing on first run, AutoApply can generate the default files.
+- After initialization, deleting a built-in `template.docx` is treated as a user choice: the package is skipped in the template list instead of being silently recreated or crashing `/api/material-templates`.
 
 ## 9. Job Search Workflow
 
@@ -324,8 +336,8 @@ Notes:
 
 - first LinkedIn use may require interactive login
 - LinkedIn results can be enriched with external ATS links
-- LinkedIn search uses a local file cache under `data/cache/linkedin_search/`; clear it from Settings or delete cached JSON if you need a fresh scrape
-- scoring requires a valid `data/profile/profile.yaml`
+- Phase 19 search always hits upstream; the cost-saving cache moved to per-snapshot tags and per-profile score rows.
+- scoring requires a valid profile under `data/profile/profiles/<profile_id>.yaml`
 
 ## 10. Application Workflow
 

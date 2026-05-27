@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.18.9-blue.svg" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.19.0-blue.svg" alt="Version"/>
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-green.svg" alt="License"/>
   <img src="https://img.shields.io/badge/python-3.12%2B-3776AB.svg" alt="Python"/>
   <img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg" alt="FastAPI"/>
@@ -42,15 +42,16 @@ AutoApply is designed for users who want automation without losing control over 
 
 ## Current Status
 
-Core product development is complete through **Phase 18: Worker Activation, Reliability, Parallelism, and automatic artifact Cleanup with quarantine/audit** (layered on top of Phase 17.9: LLM Provider Expansion).
+Core product development is complete through **Phase 19: Per-Posting Tag Cache & Filter Fast Path** (layered on top of Phase 18: Worker Activation, Reliability, Parallelism, and automatic artifact Cleanup with quarantine/audit).
 
-The current application includes the Job Index, task queue with closed-out worker bodies (no fake `"scheduled"` / `"stubbed"` success returns), async materials generation that returns `task_id` + structured `TaskRecord.result`, a `dead_lettered` state + "Stuck / failed" tab for retries/discards, an automatic artifact-cleanup pipeline with quarantine + restore + purge, atomic-write protection on every materials writer, process-wide LLM rate-limit gates (global + per-provider), and the existing Phase 17.x surface (review queue, document library, material strategy defaults, multi-vendor provider management with per-provider model catalogs, Settings model picker, custom OpenAI-compatible providers, optional cheap-model tier, LinkedIn session management, modern Vue web console). Browser form-fill / click-submit, saved-search registry fanout, and outcome status sync are still explicit `not_implemented` paths rather than silent fake successes; legacy submit entrypoints now keep entries approved/queued instead of marking them submitted. The roadmap from here is **Phase 19** (Per-Posting Tag Cache & Filter Fast Path plus saved-search registry fanout) → **Phase 20** (Custom Job Sources / Connectors with URL safety, bounded multi-source search, and feature-gated template DSL) → **Phase 21** (Multi-tenancy & Auth Hardening) → future ATS-first application status sync.
+The current application includes the Job Index, always-refresh search flow, snapshot-level objective tags, per-profile/per-scorer score cache, saved-search fanout through real `search.refresh` children, task queue with closed-out worker bodies (no fake `"scheduled"` / `"stubbed"` success returns), async materials generation that returns `task_id` + structured `TaskRecord.result`, a `dead_lettered` state + "Stuck / failed" tab for retries/discards, an automatic artifact-cleanup pipeline with quarantine + restore + purge, atomic-write protection on every materials writer, process-wide LLM rate-limit gates (global + per-provider), and the existing Phase 17.x surface (review queue, document library, material strategy defaults, multi-vendor provider management with per-provider model catalogs, Settings model picker, custom OpenAI-compatible providers, optional cheap-model tier, LinkedIn session management, modern Vue web console). Browser form-fill / click-submit and outcome status sync remain explicit `not_implemented` paths rather than silent fake successes; legacy submit entrypoints keep entries approved/queued instead of marking them submitted. The roadmap from here is **Phase 20** (Custom Job Sources / Connectors with URL safety, bounded multi-source search, and feature-gated template DSL) → **Phase 21** (Multi-tenancy & Auth Hardening) → future ATS-first application status sync.
 
 Latest local verification in this workspace:
 
-- `uv run pytest -q`: 1720 passed, 1 skipped (2026-05-21, after Phase 18)
+- `uv run pytest -q`: 1821 passed, 1 skipped (2026-05-27, after Phase 19 + deployment hardening)
 - `npm run build`: passed, with the existing Vite chunk-size warning
-- Alembic head: `b8d2f9e15c33` (Phase 18.3 DLQ columns); the Phase 18 schema chain is `e7c3a5b91f48` → `f4e8c1d2a907` → `a1c7b3e54f08` → `b8d2f9e15c33`
+- `git diff --check`: passed
+- Alembic head: `d4e2a7c19f08` (Phase 19 snapshot tags + `job_posting_scores`); the Phase 18 → 19 schema chain is `e7c3a5b91f48` → `f4e8c1d2a907` → `a1c7b3e54f08` → `b8d2f9e15c33` → `c3a7e1f2b048` → `d4e2a7c19f08`
 
 For implementation-level history, see [Phase History](docs/PHASE_HISTORY.md) and [Changelog](docs/CHANGELOG.md).
 
@@ -69,6 +70,8 @@ uv run autoapply start
 ```
 
 Open the web console at `http://127.0.0.1:8000`.
+
+The repo ships built-in DOCX template packages under `data/templates/`. On a fresh install, AutoApply initializes any missing built-in default template package once. If a user later deletes a built-in `template.docx`, the template list skips that package instead of crashing or silently recreating it. A fresh install can also start with no applicant profile; create or import one from `/profile` before running scored plan runs.
 
 `autoapply start` runs Docker Compose for **data dependencies**
 (Postgres + Redis), applies Alembic migrations, starts Celery worker

@@ -10,7 +10,8 @@
 - LinkedIn 搜索与外部 ATS 链接发现，并写入持久化 Job Index
 - Materials 工作台：按搜索结果或粘贴 JD 生成定制简历与 Cover Letter
 - Document Library：管理可信简历 / Cover Letter、promote 生成产物、配置材料策略默认值
-- DOCX-first 模板包：通过 manifest 管理样式、容量、预览、校验和上传
+- DOCX-first 模板包：通过 manifest 管理样式、容量、预览、校验、上传，并随仓库提供内置默认模板
+- Phase 19 的 snapshot 级岗位标签与按 profile/scorer 版本划分的评分缓存
 - 从 `qa_bank` 加载问答模板
 - Greenhouse / Lever / Ashby 表单自动填写
 - 多 provider LLM 路由：REST provider、本地 Ollama、本地 CLI、用户自定义 OpenAI-compatible endpoint
@@ -211,11 +212,19 @@ uv run autoapply init --skip-llm
 - 检查 `config/settings.yaml` 和 `.env`
 - 测试数据库连接
 - 执行 Alembic 迁移
-- 导入或创建 `data/profile/profile.yaml`
+- 导入或创建 `data/profile/profiles/<profile_id>.yaml` 下的申请人 profile
 - 尽可能检查已配置的 LLM provider 是否可用
 - 当你传入 `--llm-primary` / `--llm-fallback` 时，把主备 LLM 设置写入配置文件
 
-### 7.1 LLM provider 优先级
+### 7.1 首次部署的 Profile 与模板
+
+- 全新部署可以没有任何申请人 profile。`/profile` 页面会显示空状态，用户可以新建、上传简历解析，或从 Document Library 导入。
+- 定时 `orchestration.plan_run` 在找不到请求的 profile 文件时会返回 `status="no_profile"`，并在抓取/评分前停止，避免未初始化机器消耗搜索和评分资源。
+- `data/profile/profile.yaml` 是旧版单文件布局；当新 profile store 为空且该文件存在时，AutoApply 会一次性迁移到 `data/profile/profiles/default.yaml`。
+- 仓库随带两个内置 DOCX 默认模板：`data/templates/resume/ats_single_column_v1/template.docx` 与 `data/templates/cover_letter/classic_v1/template.docx`。
+- 内置默认模板包只在本地首次初始化时补齐缺失文件。初始化后如果用户删除了某个内置 `template.docx`，系统会在模板列表中跳过它，不会静默重建，也不会让 `/api/material-templates` 500。
+
+### 7.2 LLM provider 优先级
 
 当前配置在 `config/settings.yaml` 中：
 
@@ -243,7 +252,7 @@ Settings UI 可以连接、测试 provider，并选择模型。`GET /api/provide
 
 如果要接入未内置的 OpenAI-compatible endpoint，可在 `config/settings.yaml` 的 `llm.custom_providers` 下新增配置；如果 id 与内置 provider 冲突，内置 provider 优先。
 
-## 7.2 LLM fallback 机制
+## 7.3 LLM fallback 机制
 
 这里有两层 fallback：
 
@@ -269,7 +278,6 @@ Settings UI 可以连接、测试 provider，并选择模型。`GET /api/provide
 
 通常需要编辑这些文件：
 
-- `data/profile/profile.yaml`
 - `data/profile/profiles/<profile_id>.yaml`
 - `data/templates/<document_type>/<template_id>/manifest.json`
 - `config/settings.yaml`
@@ -278,7 +286,7 @@ Settings UI 可以连接、测试 provider，并选择模型。`GET /api/provide
 
 建议：
 
-- 在 `profile.yaml` 中填写身份信息、教育、经历、项目、技能、`story_bank`、`qa_bank`
+- 在 `data/profile/profiles/` 下的 profile 中填写身份信息、教育、经历、项目、技能、`story_bank`、`qa_bank`
 - 将简历和 Cover Letter 模板作为 package 放在 `data/templates/` 下维护
 - 在 `companies.yaml` 中维护要抓取的 ATS 公司 slug
 - 在 `filters.yaml` 中维护筛选条件
@@ -318,8 +326,8 @@ uv run autoapply search --source all --keyword "backend intern" --score
 
 - 第一次使用 LinkedIn 时，通常需要人工登录一次
 - LinkedIn 搜索结果会尽量提取外部 ATS 链接
-- LinkedIn 搜索会使用 `data/cache/linkedin_search/` 下的本地缓存；需要强制刷新时可在 Settings 中清空或删除缓存 JSON
-- 打分功能依赖可用的 `data/profile/profile.yaml`
+- Phase 19 后搜索每次都会打上游；节省成本的缓存移动到了 snapshot tags 和 profile 维度评分缓存
+- 打分功能依赖可用的 `data/profile/profiles/<profile_id>.yaml`
 
 ## 10. 投递岗位
 
