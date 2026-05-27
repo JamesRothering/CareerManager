@@ -81,3 +81,13 @@ def test_rename_default_profile_does_not_leave_phantom_default(profile_store: Pa
 
     ids = {p["id"] for p in profile_module.list_profiles()}
     assert ids == {"my-resume"}, f"Phantom default profile resurrected: {ids}"
+
+
+def test_load_profile_data_with_no_profiles_returns_empty_state(profile_store: Path) -> None:
+    result = profile_module.load_profile_data()
+
+    assert result["has_profile"] is False
+    assert result["profile"] is None
+    assert result["profiles"] == []
+    assert result["active_profile_id"] is None
+    assert result["selected_profile_id"] is None

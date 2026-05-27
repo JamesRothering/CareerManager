@@ -187,17 +187,9 @@ def _classify_clearance(text: str) -> bool:
 def _classify_usa_only(view: SnapshotView, text: str) -> bool:
     if any(p.search(text) for p in _USA_ONLY_PATTERNS):
         return True
-    location = (view.location or "").lower()
-    if location and any(
-        token in location
-        for token in (" usa", "usa,", " us,", "united states", "u.s.", "u.s.a")
-    ):
-        # Geographic location alone doesn't prove "USA-only" -- many JDs
-        # list a USA office while also offering remote. The text pattern
-        # above is the gate; we only return True from here when no other
-        # geographic hint conflicts.
-        if "remote" not in location and "global" not in (view.description or "").lower():
-            return False  # not a hard signal on its own
+    # Geographic location alone does not prove "USA-only"; many JDs list
+    # a USA office while still hiring globally or remotely. Only explicit
+    # text patterns above set this hard-rule tag.
     return False
 
 

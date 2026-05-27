@@ -35,6 +35,9 @@ temp/
 *.pdf
 *.docx
 !templates/*.docx
+!data/templates/resume/ats_single_column_v1/template.docx
+!data/templates/cover_letter/classic_v1/template.docx
+data/templates/**/.autoapply-default-initialized
 *.csv
 
 # Data

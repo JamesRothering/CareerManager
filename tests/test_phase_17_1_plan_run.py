@@ -87,6 +87,36 @@ def test_run_plan_requires_tenant():
         _async(run_plan(tenant_id=""))
 
 
+def test_run_plan_without_profile_skips_before_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = {"search": 0}
+
+    async def search_should_not_run(**_kwargs):
+        calls["search"] += 1
+        return {"jobs": []}
+
+    monkeypatch.setattr(
+        "src.application.profile.get_profile_path",
+        lambda profile_id: tmp_path / f"{profile_id}.yaml",
+    )
+
+    report = _async(
+        run_plan(
+            tenant_id="default",
+            profile_id="default",
+            search_fn=search_should_not_run,
+            pause_root=tmp_path,
+            now=_clock(),
+        )
+    )
+
+    assert report.status == "no_profile"
+    assert calls["search"] == 0
+    assert "profile 'default' not found" in report.errors[0]
+
+
 def test_run_plan_dry_run_selects_jobs(tmp_path: Path):
     report = _async(
         run_plan(

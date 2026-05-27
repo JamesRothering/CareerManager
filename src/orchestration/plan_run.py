@@ -244,6 +244,28 @@ async def run_plan(
             dry_run=dry_run,
         )
 
+    if score_fn is None:
+        from src.application.profile import get_profile_path  # noqa: PLC0415
+
+        profile_path = get_profile_path(profile_id)
+        if not profile_path.exists():
+            finished_at = now_fn()
+            error = f"profile {profile_id!r} not found at {profile_path}"
+            logger.info("plan_run skipped: %s; run_id=%s", error, run_id)
+            return PlanRunReport(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                search_profile_id=search_profile_id,
+                status="no_profile",
+                started_at=_isoformat(started_at),
+                finished_at=_isoformat(finished_at),
+                duration_seconds=(finished_at - started_at).total_seconds(),
+                top_n=top_n,
+                errors=[error],
+                dry_run=dry_run,
+            )
+
     # ----- 1. Search ------------------------------------------------
     del scrape_enabled  # Search currently always refreshes through search_jobs.
     search_fn = search_fn or _default_search_fn
@@ -575,6 +597,7 @@ def _default_score_fn(
     # row and skip the deterministic scorer entirely. Cache misses fall
     # through to ``score_ranked`` so the existing path is intact.
     cache_hits: list[Any] = []
+    a1_rejects: list[Any] = []
     miss_raw_jobs: list[Any] = raw_jobs
     a1_resolution: dict[str, tuple[Any, Any]] = {}
     if tenant_id and raw_jobs:
@@ -591,8 +614,21 @@ def _default_score_fn(
             )
             cache_hits, miss_raw_jobs, a1_resolution = [], raw_jobs, {}
 
+        try:
+            a1_rejects, miss_raw_jobs = _consume_a1_rejects(
+                raw_jobs=miss_raw_jobs,
+                tenant_id=tenant_id,
+                profile_data=profile_data,
+                resolution=a1_resolution,
+            )
+        except Exception:  # noqa: BLE001 -- tag cache failure is non-fatal
+            logger.exception(
+                "plan_run: A1 fast-path pre-pass failed; falling back to scoring"
+            )
+            a1_rejects, miss_raw_jobs = [], miss_raw_jobs
+
     scored_breakdowns = score_ranked(miss_raw_jobs, ctx) if miss_raw_jobs else []
-    breakdowns = cache_hits + scored_breakdowns
+    breakdowns = cache_hits + a1_rejects + scored_breakdowns
     breakdowns.sort(key=lambda b: getattr(b, "final_score", 0.0), reverse=True)
 
     if tenant_id:
@@ -713,7 +749,10 @@ def _consume_score_cache(
             )
             .all()
         )
-        key_to_ids = {(row.source, row.source_id): (row.id, row.latest_snapshot_id) for row in rows}
+        key_to_ids = {
+            (row.source, row.source_id): (row.id, row.latest_snapshot_id)
+            for row in rows
+        }
 
         for rj in raw_jobs:
             rj_id = str(getattr(rj, "id", "") or "")
@@ -807,6 +846,70 @@ def _breakdown_from_cached_verdict(
     return bd
 
 
+def _consume_a1_rejects(
+    *,
+    raw_jobs: list[Any],
+    tenant_id: str,
+    profile_data: dict[str, Any],
+    resolution: dict[str, tuple[Any, Any]],
+) -> tuple[list[Any], list[Any]]:
+    """Skip scorer work for jobs whose ready A1 tags fail a hard rule."""
+    rules = _build_hard_rules(profile_data)
+    if not raw_jobs or not rules.rules or not resolution:
+        return [], list(raw_jobs)
+
+    snapshot_ids = []
+    for rj in raw_jobs:
+        _posting_id, snapshot_id = resolution.get(
+            str(getattr(rj, "id", "") or ""), (None, None)
+        )
+        if snapshot_id is not None:
+            snapshot_ids.append(snapshot_id)
+    if not snapshot_ids:
+        return [], list(raw_jobs)
+
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.matching.scorer import ScoreBreakdown  # noqa: PLC0415
+
+    factory = get_session_factory()
+    with factory() as session:
+        decisions = _a1_rejects_for_snapshots(
+            session=session,
+            tenant_id=tenant_id,
+            snapshot_ids=snapshot_ids,
+            rules=rules,
+        )
+
+    rejects: list[Any] = []
+    misses: list[Any] = []
+    for rj in raw_jobs:
+        rj_id = str(getattr(rj, "id", "") or "")
+        posting_id, snapshot_id = resolution.get(rj_id, (None, None))
+        decision = decisions.get(str(snapshot_id)) if snapshot_id is not None else None
+        if decision is None or posting_id is None:
+            misses.append(rj)
+            continue
+        bd = ScoreBreakdown(
+            job_id=str(posting_id),
+            company=getattr(rj, "company", ""),
+            title=getattr(rj, "title", ""),
+            job_snapshot_id=str(snapshot_id),
+        )
+        bd.disqualified = True
+        bd.final_score = 0.0
+        bd.rule_bonus = 0.0
+        bd.disqualify_reasons = [_a1_reject_reason(decision)]
+        rejects.append(bd)
+
+    logger.info(
+        "plan_run: A1 fast-path tenant=%s rejects=%d scoring_candidates=%d",
+        tenant_id,
+        len(rejects),
+        len(misses),
+    )
+    return rejects, misses
+
+
 def _apply_a1_rejects(
     *,
     breakdowns: list[Any],
@@ -835,39 +938,63 @@ def _apply_a1_rejects(
     if not persistable:
         return
 
+    snapshot_ids = [_coerce_uuid(b.job_snapshot_id) for b in persistable]
     from src.core.database import get_session_factory  # noqa: PLC0415
-    from src.filter import fast_path  # noqa: PLC0415
-    from src.filter.score_cache import compute_profile_version  # noqa: PLC0415
 
-    profile_version = compute_profile_version(profile_data)
     factory = get_session_factory()
     with factory() as session:
+        decisions = _a1_rejects_for_snapshots(
+            session=session,
+            tenant_id=tenant_id,
+            snapshot_ids=snapshot_ids,
+            rules=rules,
+        )
         for bd in persistable:
-            try:
-                decision = fast_path.evaluate(
-                    session,
-                    snapshot_id=_coerce_uuid(bd.job_snapshot_id),
-                    tenant_id=tenant_id,
-                    profile_id=getattr(bd, "profile_id", None) or "default",
-                    profile_version=profile_version,
-                    hard_rules=rules,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "plan_run: fast_path.evaluate failed for snapshot=%s: %s",
-                    getattr(bd, "job_snapshot_id", None),
-                    exc,
-                )
-                continue
-            if decision.kind != "reject_a1":
+            decision = decisions.get(str(_coerce_uuid(bd.job_snapshot_id)))
+            if decision is None:
                 continue
             bd.disqualified = True
             bd.final_score = 0.0
-            reason = f"A1:{decision.rule_id}:{decision.rule_description or ''}".strip(":")
+            reason = _a1_reject_reason(decision)
             existing = list(getattr(bd, "disqualify_reasons", []) or [])
             if reason not in existing:
                 existing.append(reason)
             bd.disqualify_reasons = existing
+
+
+def _a1_rejects_for_snapshots(
+    *,
+    session: Any,
+    tenant_id: str,
+    snapshot_ids: list[Any],
+    rules: Any,
+) -> dict[str, Any]:
+    """Bulk-load ready snapshot tags and return the first failed A1 rule."""
+    if not snapshot_ids or not getattr(rules, "rules", None):
+        return {}
+
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from src.core.models import JobSnapshot  # noqa: PLC0415
+    from src.jobs.tag_service import STATUS_READY  # noqa: PLC0415
+
+    stmt = (
+        select(JobSnapshot.id, JobSnapshot.tags, JobSnapshot.tags_status)
+        .where(JobSnapshot.tenant_id == tenant_id)
+        .where(JobSnapshot.id.in_(snapshot_ids))
+    )
+    decisions: dict[str, Any] = {}
+    for row in session.execute(stmt).all():
+        if row.tags_status != STATUS_READY:
+            continue
+        failed = rules.first_failure(dict(row.tags or {}))
+        if failed is not None:
+            decisions[str(row.id)] = failed
+    return decisions
+
+
+def _a1_reject_reason(decision: Any) -> str:
+    return f"A1:{decision.rule_id}:{decision.description or ''}".strip(":")
 
 
 def _build_hard_rules(profile_data: dict[str, Any]) -> Any:
@@ -1101,20 +1228,28 @@ def _create_review_entries(
                 )
             except Exception:  # noqa: BLE001 -- defensive
                 bd_dict = {}
-            entry = create_entry(
-                session,
-                CreateEntryArgs(
-                    tenant_id=tenant_id,
-                    job_id=getattr(breakdown, "job_id", None),
-                    job_snapshot_id=getattr(breakdown, "job_snapshot_id", None),
-                    materials_path=None,
-                    score_breakdown=bd_dict,
-                    company=getattr(breakdown, "company", None),
-                    title=getattr(breakdown, "title", None),
-                    run_id=run_id,
-                ),
-            )
-            inserted.append(str(entry.id))
+            try:
+                with session.begin_nested():
+                    entry = create_entry(
+                        session,
+                        CreateEntryArgs(
+                            tenant_id=tenant_id,
+                            job_id=getattr(breakdown, "job_id", None),
+                            job_snapshot_id=getattr(breakdown, "job_snapshot_id", None),
+                            materials_path=None,
+                            score_breakdown=bd_dict,
+                            company=getattr(breakdown, "company", None),
+                            title=getattr(breakdown, "title", None),
+                            run_id=run_id,
+                        ),
+                    )
+                inserted.append(str(entry.id))
+            except Exception as exc:  # noqa: BLE001 -- one bad row should not hide the rest
+                logger.warning(
+                    "plan_run: review_queue row insert failed for job_id=%s: %s",
+                    getattr(breakdown, "job_id", None),
+                    exc,
+                )
     return inserted
 
 

@@ -104,6 +104,11 @@ def test_usa_only_explicit():
     assert compute_tags(_view(description=desc))["usa_only"] is True
 
 
+def test_usa_location_alone_is_not_usa_only():
+    tags = compute_tags(_view(location="New York, NY, USA", description="Remote-friendly team."))
+    assert tags["usa_only"] is False
+
+
 def test_age_bucket_fresh():
     now = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
     view = _view(scraped_at=now - timedelta(hours=3))

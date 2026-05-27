@@ -15,7 +15,7 @@ This migration adds the storage for both halves of that split (D029):
   audit. ``tenant_id`` is required from day one (D026 pattern).
 
 Revision ID: d4e2a7c19f08
-Revises: f4e8c1d2a907
+Revises: c3a7e1f2b048
 Create Date: 2026-05-25 00:00:00.000000
 
 """

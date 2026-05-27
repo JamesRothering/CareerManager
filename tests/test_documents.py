@@ -671,6 +671,27 @@ class TestTemplateRegistry:
         assert header_style.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.RIGHT
         assert round(cover_doc.sections[0].left_margin.inches, 2) == 0.85
 
+    def test_default_template_package_missing_docx_is_skipped_not_regenerated(self, tmp_path):
+        package = ensure_template_package("resume", template_root=tmp_path)
+        package.template_path.unlink()
+
+        templates = list_template_packages(template_root=tmp_path)
+
+        assert not package.template_path.exists()
+        assert templates["resume"] == []
+        assert templates["cover_letter"][0]["template_id"] == "classic_v1"
+
+    def test_default_template_package_missing_docx_regenerates_before_marker(self, tmp_path):
+        package = ensure_template_package("resume", template_root=tmp_path)
+        marker = package.directory / ".autoapply-default-initialized"
+        package.template_path.unlink()
+        marker.unlink()
+
+        repaired = ensure_template_package("resume", template_root=tmp_path)
+
+        assert repaired.template_path.exists()
+        assert marker.exists()
+
     def test_build_cover_letter_from_ir_renders_classic_frame(self, tmp_path):
         from docx.enum.text import WD_ALIGN_PARAGRAPH
 

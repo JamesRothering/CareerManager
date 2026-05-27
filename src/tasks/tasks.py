@@ -589,7 +589,7 @@ def posting_tag(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
         "tagger_version": result.tagger_version,
         "tags": result.tags,
         "error": result.error,
-        "status": "ok" if result.error is None else "failed",
+        "status": "ok" if result.status == "ready" else "failed",
     }
 
 

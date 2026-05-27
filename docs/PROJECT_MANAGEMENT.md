@@ -51,7 +51,6 @@ When schema changes are present, run `uv run alembic upgrade head` before launch
 | Follow-up | Why it remains |
 |---|---|
 | Final ATS click-submit | Legacy submit entrypoints no longer mark rows submitted, but the external browser click-submit step remains `not_implemented`. Submitted counts should mean real external submission only after that worker path lands. |
-| Saved-search registry fanout | `search.daily_fanout` / `search.refresh` are no longer fake successes, but they still wait on a saved-search `query_id -> kwargs` registry. Production search continues through direct `search_jobs` / `orchestration.plan_run`; Phase 19 should add the registry and wire the tasks. |
 | Outcome status sync | `maintenance.status_sync` is intentionally registered but not scheduled. Future status sync should start with ATS/application-portal polling for supported connectors, then add email / HR-reply ingestion as a second source. |
 
 ### Phase 19 Working Scope

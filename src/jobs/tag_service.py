@@ -138,6 +138,7 @@ def select_stale_snapshots(
         .where(JobSnapshot.tagger_version < TAGGER_VERSION)
         .order_by(JobSnapshot.id)
         .limit(batch_size)
+        .with_for_update(skip_locked=True)
     )
     snapshot_ids = list(session.execute(stmt).scalars())
 
