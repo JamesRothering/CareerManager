@@ -800,6 +800,7 @@ function emptyStructuredProfile() {
       tools: [],
       domains: [],
     },
+    custom_sections: [],
   }
 }
 

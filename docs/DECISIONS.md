@@ -456,3 +456,21 @@ This log captures key decisions, their rationale, and alternatives considered. E
 - Tests cover blocked localhost/private/metadata URLs, redirect revalidation, response-size/timeout failures, and Playwright domain lock violations.
 - Connector fixtures cover ATS detection, `fetch_jobs`, RawJob normalization, dedupe key, source health, and partial failure without live websites.
 - Template tests assert LLM output validates against the DSL, preview is required before activation, and dangerous steps are rejected.
+
+---
+
+## D031 — Built-in templates initialize once; user deletion is respected (2026-05-27)
+
+**Decision**: Built-in default DOCX templates are tracked in git so first-time deployments have working resume and cover-letter packages out of the box. AutoApply may generate missing built-in default template files only before the local package has been initialized. After initialization, if a user deletes a built-in `template.docx`, the package is skipped in template listings rather than silently recreated or allowed to crash the API.
+
+**Rationale**:
+
+1. **Fresh installs should work without hidden generated assets.** A cloned repo should include the default resume and cover-letter DOCX files needed by `/api/material-templates` and the Materials UI.
+2. **Runtime `data/` is also user state.** Once a local checkout has initialized its default packages, deleting a template is a user action and should not be undone by a background list call.
+3. **Partial deployments should degrade safely.** If a manifest exists but its template file is missing, listing templates should skip that invalid package and log a warning, not return HTTP 500.
+
+**Policy commitments**:
+
+- Track `data/templates/resume/ats_single_column_v1/template.docx` and `data/templates/cover_letter/classic_v1/template.docx`.
+- Keep the local initialization marker untracked so it remains per-machine state.
+- Treat missing profiles as valid first-run state: Profile UI renders an empty state, and scheduled plan runs return `status="no_profile"` before scraping when the requested scoring profile does not exist.

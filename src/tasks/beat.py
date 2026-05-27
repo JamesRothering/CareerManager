@@ -188,6 +188,14 @@ TASK_KIND_DISPLAY: dict[str, dict[str, str]] = {
         "display_name": "Job enrichment",
         "description": "Fetches and snapshots the full job description for one posting.",
     },
+    "posting.tag": {
+        "display_name": "Posting tag",
+        "description": "Computes objective tags (work mode, level, sponsorship, ...) for one snapshot.",
+    },
+    "posting.tag_backfill": {
+        "display_name": "Posting tag backfill",
+        "description": "Re-tags snapshots whose tagger_version trails the current rules.",
+    },
     "materials.generate": {
         "display_name": "Materials generation",
         "description": "Generates or revises resume and cover letter materials.",

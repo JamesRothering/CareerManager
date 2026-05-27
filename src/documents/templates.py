@@ -243,9 +243,16 @@ def ensure_template_package(
     manifest_path = package_dir / "manifest.json"
 
     if manifest_path.exists():
+        _ensure_default_template_file_on_first_run(
+            document_type,
+            template_id,
+            package_dir,
+            manifest_path,
+        )
         package = load_template_package(document_type, template_id, template_root=template_root)
         _ensure_required_markers(package)
         _write_sample_assets(package)
+        _mark_default_template_initialized(document_type, template_id, package_dir)
         return load_template_package(document_type, template_id, template_root=template_root)
 
     template_path = package_dir / "template.docx"
@@ -264,7 +271,46 @@ def ensure_template_package(
     package = load_template_package(document_type, template_id, template_root=template_root)
     _ensure_required_markers(package)
     _write_sample_assets(package)
+    _mark_default_template_initialized(document_type, template_id, package_dir)
     return load_template_package(document_type, template_id, template_root=template_root)
+
+
+_DEFAULT_TEMPLATE_INIT_MARKER = ".autoapply-default-initialized"
+
+
+def _ensure_default_template_file_on_first_run(
+    document_type: DocumentType,
+    template_id: str,
+    package_dir: Path,
+    manifest_path: Path,
+) -> None:
+    """Generate a missing built-in DOCX only before first local initialization."""
+    if template_id != DEFAULT_TEMPLATE_IDS[document_type]:
+        return
+    if (package_dir / _DEFAULT_TEMPLATE_INIT_MARKER).exists():
+        return
+
+    manifest = TemplateManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    if manifest.renderer == "latex":
+        return
+
+    template_path = package_dir / "template.docx"
+    if template_path.exists():
+        return
+    if document_type == "resume":
+        _create_default_resume_template(template_path)
+    else:
+        _create_default_cover_letter_template(template_path)
+
+
+def _mark_default_template_initialized(
+    document_type: DocumentType,
+    template_id: str,
+    package_dir: Path,
+) -> None:
+    if template_id != DEFAULT_TEMPLATE_IDS[document_type]:
+        return
+    (package_dir / _DEFAULT_TEMPLATE_INIT_MARKER).write_text("1\n", encoding="utf-8")
 
 
 def list_template_packages(
@@ -276,7 +322,14 @@ def list_template_packages(
     document_types = [document_type] if document_type else ["resume", "cover_letter"]
     grouped: dict[str, list[dict]] = {kind: [] for kind in document_types}
     for kind in document_types:
-        ensure_template_package(kind, template_root=template_root)
+        try:
+            ensure_template_package(kind, template_root=template_root)
+        except Exception as exc:
+            logger.warning(
+                "Skipping invalid default %s template package: %s",
+                kind,
+                exc,
+            )
         kind_dir = template_root / kind
         for manifest_path in sorted(kind_dir.glob("*/manifest.json")):
             template_id = manifest_path.parent.name

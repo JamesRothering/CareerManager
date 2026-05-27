@@ -4,11 +4,11 @@ This document is the live operating context for AutoApply. It should stay short,
 
 ## Current State
 
-AutoApply is complete through **Phase 18: Worker Activation, Reliability, Parallelism, Cleanup** (2026-05-21), itself layered on top of Phase 17.9.
+AutoApply is complete through **Phase 19: Per-Posting Tag Cache & Filter Fast Path** (2026-05-27), itself layered on top of Phase 18 (Worker Activation, Reliability, Parallelism, Cleanup).
 
-The product currently supports job discovery, job-index freshness, fit scoring and explanations, materials generation (now async with structured task results), document-library curation, automation plans, review queues, gated submission, application tracking, multi-vendor LLM routing with global + per-provider concurrency caps, per-provider model catalogs surfaced in the Settings UI, an optional cheap-model tier for extraction-style work, background task execution with worker bodies that no longer return fake `"scheduled"`/`"stubbed"` success, durable JSONB-safe task results via `TaskRecord.result`, dead-letter-queue plumbing for tasks that exhaust `max_retries`, and an automatic artifact-cleanup pipeline that protects DB-referenced files while quarantining orphans / tmp / failed-artifact remnants without letting old task audit rows defeat soft-delete retention.
+The product currently supports job discovery, job-index freshness, fit scoring and explanations, materials generation (now async with structured task results), document-library curation, automation plans, review queues, gated submission, application tracking, multi-vendor LLM routing with global + per-provider concurrency caps, per-provider model catalogs surfaced in the Settings UI, an optional cheap-model tier for extraction-style work, background task execution with worker bodies that no longer return fake `"scheduled"`/`"stubbed"` success, durable JSONB-safe task results via `TaskRecord.result`, dead-letter-queue plumbing for tasks that exhaust `max_retries`, an automatic artifact-cleanup pipeline that protects DB-referenced files while quarantining orphans, snapshot-level objective tags driving the filter fast-path, per-profile/per-scorer score cache reuse, saved-search registry fanout through real `search.refresh` children, bundled built-in DOCX templates, and first-run-safe empty-profile handling.
 
-The next planned hardening area is **Phase 19: Per-Posting Tag Cache & Filter Fast Path** -- drop the search-result-set cache in favour of snapshot-level objective tags and profile/scorer-version score caches, so the same JD snapshot is not re-scored on every search. Phase 19 also owns the saved-search registry needed for `search.daily_fanout` / `search.refresh` to become real fanout tasks. **Phase 20: Custom Job Sources (Connectors)** introduces URL-safe user-added company careers sites (Nvidia, Microsoft, Stripe, etc.) on top of the LinkedIn / ATS intake we ship today, with bounded multi-source search and a feature-gated LLM template DSL for the long tail. Multi-tenancy & auth hardening, originally Phase 18, now lands as **Phase 21** once the personal-version product is feature-complete. Outcome status sync is a later ATS-first feature: poll supported ATS/application portals first, then add email / HR-reply ingestion.
+The next planned area is **Phase 20: Custom Job Sources (Connectors)** -- URL-safe user-added company careers sites (Nvidia, Microsoft, Stripe, etc.) on top of the LinkedIn / ATS intake we ship today, with bounded multi-source search and a feature-gated LLM template DSL for the long tail. Multi-tenancy & auth hardening, originally Phase 18, now lands as **Phase 21** once the personal-version product is feature-complete. Outcome status sync is a later ATS-first feature: poll supported ATS/application portals first, then add email / HR-reply ingestion.
 
 ## Verification Baseline
 
@@ -16,13 +16,13 @@ Last local verification in this workspace:
 
 | Check | Result |
 |---|---|
-| `uv run pytest -q` | 1720 passed, 1 skipped |
+| `uv run pytest -q` | 1821 passed, 1 skipped |
 | `npm run build` | Passed; existing Vite chunk-size warning remains |
-| `uv run ruff check` on changed Python files | Passed |
-| `python -m py_compile` on plan-run modules | Passed |
-| Phase 18 worker bodies | Fake `"scheduled"` / `"stubbed"` returns closed out; unsupported browser/status-sync paths now return explicit `not_implemented`; `application_status_sync` removed from Beat |
+| `git diff --check` | Passed |
+| Phase 19 worker bodies | `posting.tag` / `posting.tag_backfill` registered; `search.refresh` resolves saved-search profiles; `search.daily_fanout` enqueues per-profile children. No more `not_implemented` returns from search-side tasks. |
+| First-run deployment hardening | Built-in DOCX templates are tracked in git; missing default template packages initialize once; deleted built-in templates are skipped, not silently recreated; empty Profile page and scheduled plan runs no longer crash when no profile exists. |
 
-When schema changes are present, run `uv run alembic upgrade head` before launching the web app. The current head is `b8d2f9e15c33`, which adds the dead-letter-queue columns on `tasks` (Phase 18.3). The Phase 18 schema chain is: `e7c3a5b91f48` (user_documents) → `f4e8c1d2a907` (cleanup_runs + cleanup_items + applications.deleted_at) → `a1c7b3e54f08` (tasks.result) → `b8d2f9e15c33` (tasks.last_attempted_at + dead_lettered_at + dlq_reason).
+When schema changes are present, run `uv run alembic upgrade head` before launching the web app. The current head is `d4e2a7c19f08`, which adds the Phase 19.1 snapshot-tag columns and `job_posting_scores` table. The Phase 18 → 19 chain is: `e7c3a5b91f48` (user_documents) → `f4e8c1d2a907` (cleanup audit) → `a1c7b3e54f08` (tasks.result) → `b8d2f9e15c33` (DLQ columns) → `c3a7e1f2b048` (applications.fill_details) → `d4e2a7c19f08` (snapshot tags + job_posting_scores).
 
 ## Active Roadmap
 
@@ -31,7 +31,7 @@ When schema changes are present, run `uv run alembic upgrade head` before launch
 | 17.8 | Material strategy defaults, user document library, plan-level material overrides, replace-materials review actions | Complete |
 | 17.9 | LLM provider expansion (more vendors, per-provider model catalog + UI picker, small-model tier, user-defined custom providers) | Complete |
 | 18 | Worker activation, reliability, parallelism, cleanup | Complete |
-| 19 | Per-Posting Tag Cache & Filter Fast Path: drop search-result TTL cache; tags keyed by snapshot, scores keyed by snapshot + profile_version + scorer_version | Planned |
+| 19 | Per-Posting Tag Cache & Filter Fast Path: dropped search-result TTL cache; tags keyed by snapshot, scores keyed by snapshot + profile_version + scorer_version; saved-search registry fanout; deployment hardening for built-in templates and empty-profile first runs | Complete (2026-05-27) |
 | 20 | Custom Job Sources (Connectors): URL-safe user sources, ATS auto-detection, multi-source search, and feature-gated LLM template DSL | Planned |
 | 21 | Multi-tenancy and auth hardening (deferred from Phase 18 → 19 → 20) | Future |
 | Future | ATS-first application status sync, then email / HR-reply ingestion | Backlog |
@@ -53,12 +53,11 @@ When schema changes are present, run `uv run alembic upgrade head` before launch
 | Follow-up | Why it remains |
 |---|---|
 | Final ATS click-submit | Legacy submit entrypoints no longer mark rows submitted, but the external browser click-submit step remains `not_implemented`. Submitted counts should mean real external submission only after that worker path lands. |
-| Saved-search registry fanout | `search.daily_fanout` / `search.refresh` are no longer fake successes, but they still wait on a saved-search `query_id -> kwargs` registry. Production search continues through direct `search_jobs` / `orchestration.plan_run`; Phase 19 should add the registry and wire the tasks. |
 | Outcome status sync | `maintenance.status_sync` is intentionally registered but not scheduled. Future status sync should start with ATS/application-portal polling for supported connectors, then add email / HR-reply ingestion as a second source. |
 
 ### Phase 19 Working Scope
 
-The current `search_results` TTL cache short-circuits whole result sets, which means a profile edit or a stale freshness state can hide jobs we already paid to fetch. Phase 19 moves the granularity from "result set" down to "single JD snapshot / posting analysis": searches always re-fetch upstream (so we never miss a new posting), but objective attributes are computed once per snapshot and profile-dependent scores are cached by snapshot + profile version + scorer version.
+The old `search_results` TTL cache short-circuited whole result sets, which meant a profile edit or a stale freshness state could hide jobs we already paid to fetch. Phase 19 moved the granularity from "result set" down to "single JD snapshot / posting analysis": searches always re-fetch upstream (so we never miss a new posting), but objective attributes are computed once per snapshot and profile-dependent scores are cached by snapshot + profile version + scorer version.
 
 **Data model (sub-phase 19.1):**
 
@@ -75,12 +74,13 @@ The current `search_results` TTL cache short-circuits whole result sets, which m
 |---|---|
 | 19.2 `src/jobs/tagger.py` | Pure-function rule set over JD snapshots only: `work_mode` / `level` / `sponsorship_signal` / `intern_eligible` / `posting_age_bucket` / `clearance_required` / `usa_only`. A1 tags are profile-independent objective attributes; subjective labels belong to A2 score. |
 | 19.3 `posting.tag` + `posting.tag_backfill` Celery tasks | `posting.tag` writes snapshot tags idempotently on content-hash change. `posting.tag_backfill` pages through stale `tagger_version` rows in batches and shows a UI banner while draining. |
-| 19.3b saved-search registry fanout | Persist saved-search definitions (`query_id -> source / keywords / location / filters / max_pages / profile`) so `search.daily_fanout` can enumerate active searches and enqueue real `search.refresh` children. This keeps the Phase 19 “every search hits upstream” rule while moving scheduled search refreshes out of no-op task bodies. |
+| 19.3b saved-search registry fanout | Persisted saved-search definitions (`profile_id -> source / keywords / location / filters / max_pages`) so `search.daily_fanout` can enumerate active searches and enqueue real `search.refresh` children. This keeps the Phase 19 “every search hits upstream” rule while moving scheduled search refreshes out of no-op task bodies. |
 | 19.4 `job_posting_scores` write-through | Filter Agent in `src/agent/` writes computed score keyed by `(tenant_id, snapshot_id, profile_id, profile_version, scorer_version)`. Read path checks only current profile/scorer versions before invoking the agent. |
 | 19.5 `cached_search` refactor | `src/jobs/search.py` drops the TTL short-circuit; `search_results` rows stay (for "removed since" diffs and pagination) and the existing distributed lock stays (still want to prevent concurrent same-source scrapes) |
 | 19.6 Filter fast-path | New `src/filter/fast_path.py`: A1 hard rules reject only when snapshot tags are `ready`; pending/computing tags show `Tagging...` and fall back to slow scoring; failed tags use ordinary scoring/manual retag, never default reject. A2 cache hits reuse current-version scores; misses enqueue the real Filter Agent. |
 | 19.7 Frontend | JobsView shows tag chips on each posting (`Remote` / `Senior` / `7 days` / `Sponsorship needed`); spinner + "Tagging…" while `tags_status='pending'`; manual `POST /api/jobs/postings/{id}/retag`. ReviewQueueView shows `(cached score · profile vXYZ · scorer sABC)` so the user knows when and why a verdict came from cache. |
 | 19.8 Docs sweep | README / PROJECT_MANAGEMENT / CHANGELOG; DECISIONS entry for snapshot-level A1 tags, A2 score keys, and the Phase 19 cross-source dedupe boundary. |
+| 19.9 Deployment hardening | Bundled default DOCX template files are tracked; built-in template packages initialize once and later user deletion is respected; `/api/material-templates` skips invalid packages instead of returning 500; `/profile` handles an empty profile store; scheduled plan runs return `status="no_profile"` before scraping when the scoring profile is missing. |
 
 **Profile-version derivation:** `hashlib.sha256(canonical_json(filter_profile)).hexdigest()[:12]` — a profile edit changes the version. `scorer_version` is a separate constant bumped on hard-rule / prompt / agent behavior changes. Old `job_posting_scores` rows remain queryable for historical "why was this scored that way" audits, but hot reads use only the current profile/scorer versions.
 

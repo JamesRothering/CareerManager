@@ -29,12 +29,13 @@ This file is the compact archive of shipped AutoApply phases. It preserves proje
 | 17.8 | Material strategy and document library | Added `user_documents`, document upload/download/promote APIs, profile-from-library flow, material defaults, per-plan material overrides, replace-materials actions, and library/template tabs in the Materials workspace. |
 | 17.9 | LLM provider expansion | Added DeepSeek, Moonshot/Kimi, Qwen, xAI Grok, Groq, Mistral, OpenRouter, Ollama, per-provider model catalogs, Settings model picker, small-model routing tier, and user-defined OpenAI-compatible custom providers. |
 | 18 | Worker activation, reliability, parallelism, cleanup | Replaced fake worker returns with real call chains or explicit `not_implemented`, made material generation async with durable JSONB-safe `TaskRecord.result`, added DLQ metadata and retry/discard controls, shipped automatic artifact cleanup with quarantine/audit/restore/purge and soft-delete retention hardening, added atomic writes, introduced global/provider LLM concurrency gates, and stopped legacy submit paths from marking rows submitted before real ATS submission exists. |
+| 19 | Per-posting tag cache and filter fast-path | Removed the whole-result search TTL short-circuit, added snapshot-level objective tags, per-profile/per-scorer score cache rows, real saved-search fanout tasks, A1/A2 filter fast-paths, JobsView tag/retag UI, ReviewQueue cache provenance, and first-run deployment hardening for bundled templates and empty profiles. |
 
 ## Current Product Baseline
 
-The current baseline is a local-first automation product with a web console, durable Postgres records, Redis/Celery background execution, async material generation with durable task results, explicit review before submit, user-curated document library, automatic artifact cleanup, and multi-vendor provider-agnostic LLM support.
+The current baseline is a local-first automation product with a web console, durable Postgres records, Redis/Celery background execution, async material generation with durable task results, explicit review before submit, user-curated document library, automatic artifact cleanup, per-posting analysis caches, and multi-vendor provider-agnostic LLM support.
 
-The next planned milestone is **Phase 19: Per-Posting Tag Cache & Filter Fast Path**, including the saved-search registry needed to make `search.daily_fanout` / `search.refresh` real scheduled work. Phase 20 follows with custom job sources/connectors, Phase 21 with multi-tenancy & auth hardening, and ATS-first application status sync remains a later backlog item before email / HR-reply ingestion.
+The next planned milestone is **Phase 20: Custom Job Sources / Connectors**. Phase 21 follows with multi-tenancy & auth hardening, and ATS-first application status sync remains a later backlog item before email / HR-reply ingestion.
 
 ## Detail Pointers
 

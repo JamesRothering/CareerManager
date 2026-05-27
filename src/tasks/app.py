@@ -37,6 +37,11 @@ DEFAULT_ROUTE_PREFIX_QUEUE: dict[str, str] = {
     **{q: q for q in QUEUES},
     "orchestration": "search",
     "notifications": "maintenance",
+    # Phase 19.3: ``posting.tag`` / ``posting.tag_backfill`` are
+    # discovery-side work; route them to the ``search`` queue so the
+    # materials worker pool isn't choked by tag fan-out after a large
+    # snapshot drop.
+    "posting": "search",
 }
 
 

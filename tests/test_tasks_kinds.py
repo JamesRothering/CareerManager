@@ -61,19 +61,30 @@ def test_router_assigns_each_task_kind_to_named_queue(
 
 
 def test_search_refresh_rejects_empty_payload() -> None:
-    # Eager mode + propagation surfaces our TypeError raised on
-    # ValidationError.
+    # Phase 19.3b: payload now requires either profile_id or query_id;
+    # an empty dict raises TypeError so Celery treats it as terminal.
     with pytest.raises((TypeError, ValidationError)):
         task_kinds.search_refresh.apply(kwargs={}).get()
 
 
-def test_search_refresh_accepts_valid_payload() -> None:
+def test_search_refresh_invalid_query_id() -> None:
+    """A malformed UUID is a terminal envelope, not an exception."""
     out = task_kinds.search_refresh.apply(
-        kwargs={"query_id": "q1", "source": "greenhouse"}
+        kwargs={"query_id": "not-a-uuid", "source": "greenhouse"}
     ).get()
     assert out["task"] == "search.refresh"
-    assert out["query_id"] == "q1"
-    assert out["source"] == "greenhouse"
+    assert out["status"] == "invalid_query_id"
+
+
+def test_search_refresh_profile_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.application.search_profiles.load_search_profiles_data",
+        lambda: {"profiles": []},
+    )
+    out = task_kinds.search_refresh.apply(
+        kwargs={"profile_id": "missing"}
+    ).get()
+    assert out["status"] == "profile_not_found"
 
 
 def test_materials_generate_defaults_to_resume_and_cover_letter() -> None:
@@ -98,13 +109,37 @@ def test_application_submit_round_trip() -> None:
 # ---- Beat-driven stubs --------------------------------------------------
 
 
-def test_search_daily_fanout_returns_not_implemented() -> None:
-    """Phase 18.1: search.daily_fanout is intentionally a no-op tick
-    until the saved-search registry surfaces query-id -> kwargs
-    lookup. The task is still registered for Beat audit."""
+def test_search_daily_fanout_enqueues_per_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 19.3b: ``search.daily_fanout`` enumerates saved-search
+    profiles and enqueues one ``search.refresh`` child per profile.
+    The no-op stub it used to be is gone."""
+    monkeypatch.setattr(
+        "src.application.search_profiles.load_search_profiles_data",
+        lambda: {
+            "profiles": [
+                {"id": "SDE", "source": "linkedin", "max_pages": 5},
+                {"id": "PM", "source": "ats", "max_pages": 10},
+            ]
+        },
+    )
+
+    sent: list[dict[str, Any]] = []
+
+    class _AsyncResult:
+        id = "fake-task-id"
+
+    def fake_send_task(name, *, kwargs, queue=None):
+        sent.append({"name": name, "kwargs": kwargs, "queue": queue})
+        return _AsyncResult()
+
+    monkeypatch.setattr(celery_app, "send_task", fake_send_task)
+
     out = task_kinds.search_daily_fanout.apply().get()
-    assert out["status"] == "not_implemented"
-    assert out["task"] == "search.daily_fanout"
+    assert out["status"] == "ok"
+    assert out["profile_count"] == 2
+    assert len(out["enqueued"]) == 2
+    assert {row["name"] for row in sent} == {"search.refresh"}
+    assert {row["kwargs"]["profile_id"] for row in sent} == {"SDE", "PM"}
 
 
 def test_cache_eviction_runs_cleanup_pipeline(

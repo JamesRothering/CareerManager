@@ -474,6 +474,17 @@ def _raw_job_from_index_posting(posting, snapshot):
     from src.intake.schema import JobRequirements, RawJob
 
     raw = dict(getattr(snapshot, "raw_data", None) or {})
+    # Phase 19.7: surface posting identity and snapshot tags so
+    # JobsView can render tag chips, the retag button, and the
+    # "Tagging…" badge without a separate per-row API call.
+    raw["posting_id"] = str(posting.id)
+    if snapshot is not None:
+        raw["snapshot_id"] = str(snapshot.id)
+        raw["posting_tags"] = dict(getattr(snapshot, "tags", None) or {})
+        raw["posting_tags_status"] = getattr(snapshot, "tags_status", None)
+    else:
+        raw.setdefault("posting_tags", dict(getattr(posting, "latest_tags", None) or {}))
+        raw.setdefault("posting_tags_status", None)
     requirements_payload = getattr(snapshot, "requirements", None) or raw.get("requirements") or {}
     try:
         requirements = JobRequirements(**requirements_payload)
@@ -1473,6 +1484,14 @@ def serialize_job(job, match_score: float | None = None) -> dict:
         "experience_years_max": metadata.get("experience_years_max"),
         "pay_min": metadata.get("pay_min"),
         "pay_max": metadata.get("pay_max"),
+        # Phase 19.7: lifted from raw_data so JobsView can render tag
+        # chips without digging into raw_data. ``posting_id`` is the
+        # persisted JobPosting id (RawJob.id is a fresh UUID per scrape),
+        # required by the ``/api/jobs/postings/{id}/retag`` endpoint.
+        "posting_id": job.raw_data.get("posting_id"),
+        "snapshot_id": job.raw_data.get("snapshot_id"),
+        "posting_tags": dict(job.raw_data.get("posting_tags") or {}),
+        "posting_tags_status": job.raw_data.get("posting_tags_status"),
         "raw_data": job.raw_data,
         "discovered_at": _isoformat(job.discovered_at),
     }

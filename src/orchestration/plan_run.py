@@ -244,6 +244,28 @@ async def run_plan(
             dry_run=dry_run,
         )
 
+    if score_fn is None:
+        from src.application.profile import get_profile_path  # noqa: PLC0415
+
+        profile_path = get_profile_path(profile_id)
+        if not profile_path.exists():
+            finished_at = now_fn()
+            error = f"profile {profile_id!r} not found at {profile_path}"
+            logger.info("plan_run skipped: %s; run_id=%s", error, run_id)
+            return PlanRunReport(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                search_profile_id=search_profile_id,
+                status="no_profile",
+                started_at=_isoformat(started_at),
+                finished_at=_isoformat(finished_at),
+                duration_seconds=(finished_at - started_at).total_seconds(),
+                top_n=top_n,
+                errors=[error],
+                dry_run=dry_run,
+            )
+
     # ----- 1. Search ------------------------------------------------
     del scrape_enabled  # Search currently always refreshes through search_jobs.
     search_fn = search_fn or _default_search_fn
@@ -568,18 +590,505 @@ def _default_score_fn(
 
     raw_jobs = [_coerce_job_to_rawjob(j) for j in jobs]
     raw_jobs = [j for j in raw_jobs if j is not None]
-    breakdowns = score_ranked(raw_jobs, ctx)
+
+    # Phase 19.6: consult the A2 score cache up front. For raw_jobs
+    # whose snapshot + (profile_version, scorer_version) already has a
+    # cached verdict, build a :class:`ScoreBreakdown` from the cached
+    # row and skip the deterministic scorer entirely. Cache misses fall
+    # through to ``score_ranked`` so the existing path is intact.
+    cache_hits: list[Any] = []
+    a1_rejects: list[Any] = []
+    miss_raw_jobs: list[Any] = raw_jobs
+    a1_resolution: dict[str, tuple[Any, Any]] = {}
+    if tenant_id and raw_jobs:
+        try:
+            cache_hits, miss_raw_jobs, a1_resolution = _consume_score_cache(
+                raw_jobs=raw_jobs,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- cache failure is non-fatal
+            logger.exception(
+                "plan_run: score cache pre-pass failed; falling back to full rescore"
+            )
+            cache_hits, miss_raw_jobs, a1_resolution = [], raw_jobs, {}
+
+        try:
+            a1_rejects, miss_raw_jobs = _consume_a1_rejects(
+                raw_jobs=miss_raw_jobs,
+                tenant_id=tenant_id,
+                profile_data=profile_data,
+                resolution=a1_resolution,
+            )
+        except Exception:  # noqa: BLE001 -- tag cache failure is non-fatal
+            logger.exception(
+                "plan_run: A1 fast-path pre-pass failed; falling back to scoring"
+            )
+            a1_rejects, miss_raw_jobs = [], miss_raw_jobs
+
+    scored_breakdowns = score_ranked(miss_raw_jobs, ctx) if miss_raw_jobs else []
+    breakdowns = cache_hits + a1_rejects + scored_breakdowns
+    breakdowns.sort(key=lambda b: getattr(b, "final_score", 0.0), reverse=True)
 
     if tenant_id:
         try:
-            _resolve_and_patch_posting_ids(breakdowns, raw_jobs, tenant_id)
+            _resolve_and_patch_posting_ids(scored_breakdowns, miss_raw_jobs, tenant_id)
         except Exception:  # noqa: BLE001 - non-fatal; logged
             logger.exception(
                 "plan_run: posting-id resolution failed; review entries "
                 "will land with RawJob.id and pre-submit may fail"
             )
 
+        # Phase 19.6: apply A1 fast-path rejects. The deterministic
+        # scorer already disqualifies on hard rules over the raw JD; the
+        # A1 layer adds snapshot-tag-based rejects that don't require
+        # re-parsing the JD text (e.g. ``sponsorship_signal=not_offered``).
+        # Disqualified breakdowns get ``disqualify_reasons`` extended; the
+        # cache write-through below still records the verdict for audit.
+        try:
+            _apply_a1_rejects(
+                breakdowns=breakdowns,
+                tenant_id=tenant_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- never bounce a successful score
+            logger.exception("plan_run: A1 fast-path rejects failed")
+
+        # Phase 19.4: write-through to job_posting_scores. Skip the
+        # cached-hit breakdowns (they came from the cache row we'd be
+        # re-inserting, and on-conflict-do-nothing would no-op anyway).
+        try:
+            _persist_score_cache(
+                breakdowns=scored_breakdowns,
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_data=profile_data,
+            )
+        except Exception:  # noqa: BLE001 -- never bounce a successful score
+            logger.exception("plan_run: score cache write-through failed")
+
+    _ = a1_resolution  # currently informational; reserved for future A1 telemetry
     return breakdowns
+
+
+def _consume_score_cache(
+    *,
+    raw_jobs: list[Any],
+    tenant_id: str,
+    profile_id: str,
+    profile_data: dict[str, Any],
+) -> tuple[list[Any], list[Any], dict[str, tuple[Any, Any]]]:
+    """Pre-pass that turns the A2 score cache into actual fast-path savings.
+
+    Resolves each ``RawJob.id -> (posting_id, snapshot_id)`` via the
+    ``JobPosting`` row, then looks up
+    ``(tenant_id, snapshot_id, profile_id, profile_version, scorer_version)``
+    in :mod:`src.filter.score_cache`. For each hit we synthesise a
+    :class:`ScoreBreakdown` from the cached payload so the downstream
+    plan_run flow keeps working unchanged; misses fall through to the
+    real scorer.
+
+    Returns ``(cache_hit_breakdowns, miss_raw_jobs, resolution_map)``.
+    """
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.core.models import JobPosting  # noqa: PLC0415
+    from src.filter.score_cache import (  # noqa: PLC0415
+        compute_profile_version,
+        get_cached_score,
+    )
+    from src.matching.scorer import ScoreBreakdown  # noqa: PLC0415
+
+    if not raw_jobs:
+        return [], [], {}
+
+    # Build (source, source_id) keys and map RawJob.id -> key.
+    rawjob_id_to_key: dict[str, tuple[str, str]] = {}
+    keys: set[tuple[str, str]] = set()
+    for rj in raw_jobs:
+        source = getattr(rj, "source", None)
+        source_id = getattr(rj, "source_id", None)
+        rj_id = getattr(rj, "id", None)
+        if source and source_id and rj_id is not None:
+            key = (str(source), str(source_id))
+            keys.add(key)
+            rawjob_id_to_key[str(rj_id)] = key
+
+    if not keys:
+        return [], list(raw_jobs), {}
+
+    from sqlalchemy import and_, or_, select  # noqa: PLC0415
+
+    profile_version = compute_profile_version(profile_data)
+    factory = get_session_factory()
+
+    cache_hits: list[Any] = []
+    miss_raw_jobs: list[Any] = []
+    resolution: dict[str, tuple[Any, Any]] = {}
+
+    with factory() as session:
+        rows = (
+            session.execute(
+                select(
+                    JobPosting.id,
+                    JobPosting.latest_snapshot_id,
+                    JobPosting.source,
+                    JobPosting.source_id,
+                ).where(
+                    JobPosting.tenant_id == tenant_id,
+                    or_(
+                        *[
+                            and_(
+                                JobPosting.source == s,
+                                JobPosting.source_id == sid,
+                            )
+                            for s, sid in keys
+                        ]
+                    ),
+                )
+            )
+            .all()
+        )
+        key_to_ids = {
+            (row.source, row.source_id): (row.id, row.latest_snapshot_id)
+            for row in rows
+        }
+
+        for rj in raw_jobs:
+            rj_id = str(getattr(rj, "id", "") or "")
+            key = rawjob_id_to_key.get(rj_id)
+            persisted = key_to_ids.get(key) if key else None
+            if persisted is not None:
+                resolution[rj_id] = persisted
+            posting_id, snapshot_id = persisted if persisted else (None, None)
+            if snapshot_id is None:
+                miss_raw_jobs.append(rj)
+                continue
+
+            hit = get_cached_score(
+                session,
+                tenant_id=tenant_id,
+                snapshot_id=snapshot_id,
+                profile_id=profile_id,
+                profile_version=profile_version,
+            )
+            if hit is None:
+                miss_raw_jobs.append(rj)
+                continue
+
+            cache_hits.append(
+                _breakdown_from_cached_verdict(
+                    raw_job=rj,
+                    posting_id=posting_id,
+                    snapshot_id=snapshot_id,
+                    cached=hit,
+                    breakdown_cls=ScoreBreakdown,
+                )
+            )
+
+    logger.info(
+        "plan_run: score cache pre-pass tenant=%s hits=%d misses=%d",
+        tenant_id,
+        len(cache_hits),
+        len(miss_raw_jobs),
+    )
+    return cache_hits, miss_raw_jobs, resolution
+
+
+def _breakdown_from_cached_verdict(
+    *,
+    raw_job: Any,
+    posting_id: Any,
+    snapshot_id: Any,
+    cached: Any,
+    breakdown_cls: Any,
+) -> Any:
+    """Rehydrate a :class:`ScoreBreakdown` from a cached row.
+
+    The cached ``score_breakdown`` JSON carries every field
+    ``ScoreBreakdown.to_dict()`` produced at write time. We replay the
+    salient ones (``final_score``, ``disqualified``, component scores)
+    so downstream code -- top-N selection, review-queue rendering, the
+    "cache provenance" badge -- gets a breakdown that quacks like a
+    freshly computed one. ``job_id`` is set to the persisted
+    ``posting_id`` so the pre-submit gate works the same as it does for
+    breakdowns that went through :func:`_resolve_and_patch_posting_ids`.
+    """
+    bd_payload = dict(cached.score_breakdown or {})
+    bd = breakdown_cls(
+        job_id=str(posting_id),
+        company=bd_payload.get("company") or getattr(raw_job, "company", ""),
+        title=bd_payload.get("title") or getattr(raw_job, "title", ""),
+        job_snapshot_id=str(snapshot_id),
+    )
+    bd.final_score = float(cached.final_score) if cached.final_score is not None else 0.0
+    bd.disqualified = bool(bd_payload.get("disqualified") or cached.verdict == "reject")
+    bd.skill_overlap = float(bd_payload.get("skill_overlap") or 0.0)
+    bd.keyword_similarity = float(bd_payload.get("keyword_similarity") or 0.0)
+    bd.rule_bonus = float(bd_payload.get("rule_bonus") or 0.0)
+    bd.quality_multiplier = float(bd_payload.get("quality_multiplier") or 1.0)
+    bd.disqualify_reasons = list(bd_payload.get("disqualify_reasons") or [])
+    # Stash cache provenance so ReviewQueueView's "cached · profile vXYZ ·
+    # scorer sABC" badge can render. The frontend reads
+    # ``score_breakdown.cache.{profile_version, scorer_version, computed_at}``.
+    bd_payload["cache"] = {
+        "profile_version": cached.profile_version,
+        "scorer_version": cached.scorer_version,
+        "computed_at": cached.computed_at.isoformat() if cached.computed_at else None,
+    }
+    # Some downstream consumers serialise the breakdown via to_dict();
+    # stash the merged payload under a private attribute so a future
+    # ``to_dict`` override can return the cached breakdown verbatim. The
+    # current code path that reads ``breakdown.to_dict()`` is the
+    # write-through which we skip for cache hits, so the field is
+    # informational today.
+    bd._cached_payload = bd_payload  # type: ignore[attr-defined]
+    return bd
+
+
+def _consume_a1_rejects(
+    *,
+    raw_jobs: list[Any],
+    tenant_id: str,
+    profile_data: dict[str, Any],
+    resolution: dict[str, tuple[Any, Any]],
+) -> tuple[list[Any], list[Any]]:
+    """Skip scorer work for jobs whose ready A1 tags fail a hard rule."""
+    rules = _build_hard_rules(profile_data)
+    if not raw_jobs or not rules.rules or not resolution:
+        return [], list(raw_jobs)
+
+    snapshot_ids = []
+    for rj in raw_jobs:
+        _posting_id, snapshot_id = resolution.get(
+            str(getattr(rj, "id", "") or ""), (None, None)
+        )
+        if snapshot_id is not None:
+            snapshot_ids.append(snapshot_id)
+    if not snapshot_ids:
+        return [], list(raw_jobs)
+
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.matching.scorer import ScoreBreakdown  # noqa: PLC0415
+
+    factory = get_session_factory()
+    with factory() as session:
+        decisions = _a1_rejects_for_snapshots(
+            session=session,
+            tenant_id=tenant_id,
+            snapshot_ids=snapshot_ids,
+            rules=rules,
+        )
+
+    rejects: list[Any] = []
+    misses: list[Any] = []
+    for rj in raw_jobs:
+        rj_id = str(getattr(rj, "id", "") or "")
+        posting_id, snapshot_id = resolution.get(rj_id, (None, None))
+        decision = decisions.get(str(snapshot_id)) if snapshot_id is not None else None
+        if decision is None or posting_id is None:
+            misses.append(rj)
+            continue
+        bd = ScoreBreakdown(
+            job_id=str(posting_id),
+            company=getattr(rj, "company", ""),
+            title=getattr(rj, "title", ""),
+            job_snapshot_id=str(snapshot_id),
+        )
+        bd.disqualified = True
+        bd.final_score = 0.0
+        bd.rule_bonus = 0.0
+        bd.disqualify_reasons = [_a1_reject_reason(decision)]
+        rejects.append(bd)
+
+    logger.info(
+        "plan_run: A1 fast-path tenant=%s rejects=%d scoring_candidates=%d",
+        tenant_id,
+        len(rejects),
+        len(misses),
+    )
+    return rejects, misses
+
+
+def _apply_a1_rejects(
+    *,
+    breakdowns: list[Any],
+    tenant_id: str,
+    profile_data: dict[str, Any],
+) -> None:
+    """Phase 19.6: walk the breakdowns, look up each snapshot's tags,
+    and flip the breakdown to ``disqualified=True`` when an A1 hard
+    rule rejects.
+
+    Hard rules are derived from the applicant profile (``sponsorship_required``
+    when ``profile.work_authorization`` indicates need for visa support,
+    ``no_clearance`` when ``profile.clearance=False``). The fast-path
+    module is the single source of truth for which tag values trigger
+    which rule; we only build the rule set here.
+    """
+    rules = _build_hard_rules(profile_data)
+    if not rules.rules:
+        return
+
+    persistable = [
+        b
+        for b in breakdowns
+        if getattr(b, "job_snapshot_id", None) and not getattr(b, "disqualified", False)
+    ]
+    if not persistable:
+        return
+
+    snapshot_ids = [_coerce_uuid(b.job_snapshot_id) for b in persistable]
+    from src.core.database import get_session_factory  # noqa: PLC0415
+
+    factory = get_session_factory()
+    with factory() as session:
+        decisions = _a1_rejects_for_snapshots(
+            session=session,
+            tenant_id=tenant_id,
+            snapshot_ids=snapshot_ids,
+            rules=rules,
+        )
+        for bd in persistable:
+            decision = decisions.get(str(_coerce_uuid(bd.job_snapshot_id)))
+            if decision is None:
+                continue
+            bd.disqualified = True
+            bd.final_score = 0.0
+            reason = _a1_reject_reason(decision)
+            existing = list(getattr(bd, "disqualify_reasons", []) or [])
+            if reason not in existing:
+                existing.append(reason)
+            bd.disqualify_reasons = existing
+
+
+def _a1_rejects_for_snapshots(
+    *,
+    session: Any,
+    tenant_id: str,
+    snapshot_ids: list[Any],
+    rules: Any,
+) -> dict[str, Any]:
+    """Bulk-load ready snapshot tags and return the first failed A1 rule."""
+    if not snapshot_ids or not getattr(rules, "rules", None):
+        return {}
+
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from src.core.models import JobSnapshot  # noqa: PLC0415
+    from src.jobs.tag_service import STATUS_READY  # noqa: PLC0415
+
+    stmt = (
+        select(JobSnapshot.id, JobSnapshot.tags, JobSnapshot.tags_status)
+        .where(JobSnapshot.tenant_id == tenant_id)
+        .where(JobSnapshot.id.in_(snapshot_ids))
+    )
+    decisions: dict[str, Any] = {}
+    for row in session.execute(stmt).all():
+        if row.tags_status != STATUS_READY:
+            continue
+        failed = rules.first_failure(dict(row.tags or {}))
+        if failed is not None:
+            decisions[str(row.id)] = failed
+    return decisions
+
+
+def _a1_reject_reason(decision: Any) -> str:
+    return f"A1:{decision.rule_id}:{decision.description or ''}".strip(":")
+
+
+def _build_hard_rules(profile_data: dict[str, Any]) -> Any:
+    """Derive the active A1 hard-rule set from the applicant profile.
+
+    Conservative defaults: rules are only installed when the profile
+    explicitly opts in (e.g. needs sponsorship, cannot get a US
+    clearance). Profiles that don't mention these flags get an empty
+    rule set so existing behaviour is preserved.
+    """
+    from src.filter import fast_path  # noqa: PLC0415
+
+    rules: list[fast_path.HardRule] = []
+    work_auth = (profile_data or {}).get("work_authorization") or {}
+    if isinstance(work_auth, dict):
+        needs_sponsorship = bool(
+            work_auth.get("needs_sponsorship")
+            or work_auth.get("requires_sponsorship")
+        )
+        if needs_sponsorship:
+            rules.append(fast_path.sponsorship_required_rule())
+
+    clearance = (profile_data or {}).get("clearance")
+    if clearance is False or (isinstance(clearance, dict) and clearance.get("eligible") is False):
+        rules.append(fast_path.clearance_excluded_rule())
+    return fast_path.HardRuleSet(rules=rules)
+
+
+def _persist_score_cache(
+    *,
+    breakdowns: list[Any],
+    tenant_id: str,
+    profile_id: str,
+    profile_data: dict[str, Any],
+) -> None:
+    """Phase 19.4 write-through.
+
+    One row per ``(snapshot, profile, profile_version, scorer_version)``;
+    breakdowns whose ``job_snapshot_id`` is unset (the snapshot has not
+    been enriched yet) are skipped because the cache key would be
+    ambiguous. The unique constraint guarantees idempotency under races.
+    """
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.filter.score_cache import (  # noqa: PLC0415
+        SCORER_VERSION,
+        compute_profile_version,
+        record_score,
+    )
+
+    persistable = [
+        b
+        for b in breakdowns
+        if getattr(b, "job_snapshot_id", None) and getattr(b, "job_id", None)
+    ]
+    if not persistable:
+        return
+
+    profile_version = compute_profile_version(profile_data)
+    factory = get_session_factory()
+    with factory() as session, session.begin():
+        for breakdown in persistable:
+            try:
+                record_score(
+                    session,
+                    tenant_id=tenant_id,
+                    posting_id=_coerce_uuid(breakdown.job_id),
+                    snapshot_id=_coerce_uuid(breakdown.job_snapshot_id),
+                    profile_id=profile_id,
+                    profile_version=profile_version,
+                    breakdown=breakdown,
+                    scorer_version=SCORER_VERSION,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plan_run: score cache row insert failed for snapshot=%s: %s",
+                    getattr(breakdown, "job_snapshot_id", None),
+                    exc,
+                )
+
+
+def _coerce_uuid(value: Any) -> Any:
+    """Pass UUIDs through; parse strings; otherwise return as-is so the
+    SQLAlchemy column raises a clear error rather than silently storing
+    junk. Tests inject ``str`` ids; production code is already ``UUID``."""
+    from uuid import UUID  # noqa: PLC0415
+
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return UUID(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _resolve_and_patch_posting_ids(
@@ -719,20 +1228,28 @@ def _create_review_entries(
                 )
             except Exception:  # noqa: BLE001 -- defensive
                 bd_dict = {}
-            entry = create_entry(
-                session,
-                CreateEntryArgs(
-                    tenant_id=tenant_id,
-                    job_id=getattr(breakdown, "job_id", None),
-                    job_snapshot_id=getattr(breakdown, "job_snapshot_id", None),
-                    materials_path=None,
-                    score_breakdown=bd_dict,
-                    company=getattr(breakdown, "company", None),
-                    title=getattr(breakdown, "title", None),
-                    run_id=run_id,
-                ),
-            )
-            inserted.append(str(entry.id))
+            try:
+                with session.begin_nested():
+                    entry = create_entry(
+                        session,
+                        CreateEntryArgs(
+                            tenant_id=tenant_id,
+                            job_id=getattr(breakdown, "job_id", None),
+                            job_snapshot_id=getattr(breakdown, "job_snapshot_id", None),
+                            materials_path=None,
+                            score_breakdown=bd_dict,
+                            company=getattr(breakdown, "company", None),
+                            title=getattr(breakdown, "title", None),
+                            run_id=run_id,
+                        ),
+                    )
+                inserted.append(str(entry.id))
+            except Exception as exc:  # noqa: BLE001 -- one bad row should not hide the rest
+                logger.warning(
+                    "plan_run: review_queue row insert failed for job_id=%s: %s",
+                    getattr(breakdown, "job_id", None),
+                    exc,
+                )
     return inserted
 
 

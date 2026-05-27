@@ -1068,6 +1068,18 @@ onMounted(refresh)
               >
                 Match {{ formatPercent(entry.score_breakdown.final_score, "0%") }}
               </Badge>
+              <!-- Phase 19.7: cache provenance. When the verdict came from
+                   the A2 score cache the entry's payload carries the
+                   profile and scorer versions; this lets the operator
+                   tell a fresh score from a cached one (D029). -->
+              <Badge
+                v-if="entry.score_breakdown?.cache?.profile_version"
+                variant="secondary"
+                :title="`Cached on ${entry.score_breakdown.cache.computed_at || 'an earlier run'}`"
+              >
+                cached · profile v{{ entry.score_breakdown.cache.profile_version }}
+                · scorer {{ entry.score_breakdown.cache.scorer_version }}
+              </Badge>
             </div>
 
             <div
