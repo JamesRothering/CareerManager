@@ -1787,27 +1787,59 @@ def _enqueue_regenerate_material(
         app = session.get(Application, application_uuid)
         if app is None:
             raise HTTPException(status_code=404, detail="Application not found.")
-        job_id = str(app.job_id)
+        job_posting_id = getattr(app, "job_posting_id", None)
+        canonical_job_id = job_posting_id or app.job_id
+        if canonical_job_id is None:
+            raise HTTPException(status_code=409, detail="Application has no job binding.")
+        job_id = str(canonical_job_id)
         try:
-            from src.core.models import Job  # noqa: PLC0415
+            from src.core.models import Job, JobPosting, JobSnapshot  # noqa: PLC0415
 
-            job = session.get(Job, app.job_id) if app.job_id else None
-            if job is not None:
+            posting = (
+                session.get(JobPosting, job_posting_id)
+                if job_posting_id
+                else None
+            )
+            snapshot_id = app.job_snapshot_id or (
+                posting.latest_snapshot_id if posting is not None else None
+            )
+            snapshot = session.get(JobSnapshot, snapshot_id) if snapshot_id else None
+            if posting is not None:
                 job_payload = {
-                    "id": str(job.id),
-                    "source": job.source or "unknown",
-                    "source_id": job.source_id or str(job.id),
-                    "company": job.company,
-                    "title": job.title,
-                    "location": job.location,
-                    "employment_type": job.employment_type,
-                    "seniority": job.seniority,
-                    "description": job.description,
-                    "requirements": job.requirements or {},
-                    "application_url": job.application_url,
-                    "ats_type": job.ats_type or job.source or "unknown",
-                    "raw_data": job.raw_data or {},
+                    "id": str(posting.id),
+                    "source": posting.source,
+                    "source_id": posting.source_id,
+                    "company": posting.company,
+                    "title": snapshot.title if snapshot else "",
+                    "location": snapshot.location if snapshot else None,
+                    "employment_type": snapshot.employment_type if snapshot else None,
+                    "seniority": snapshot.seniority if snapshot else None,
+                    "description": snapshot.description if snapshot else None,
+                    "requirements": snapshot.requirements if snapshot else {},
+                    "application_url": (
+                        snapshot.application_url if snapshot else posting.canonical_url
+                    ),
+                    "ats_type": posting.source,
+                    "raw_data": snapshot.raw_data if snapshot else {},
                 }
+            else:
+                legacy_job = session.get(Job, app.job_id) if app.job_id else None
+                if legacy_job is not None:
+                    job_payload = {
+                        "id": str(legacy_job.id),
+                        "source": legacy_job.source or "unknown",
+                        "source_id": legacy_job.source_id or str(legacy_job.id),
+                        "company": legacy_job.company,
+                        "title": legacy_job.title,
+                        "location": legacy_job.location,
+                        "employment_type": legacy_job.employment_type,
+                        "seniority": legacy_job.seniority,
+                        "description": legacy_job.description,
+                        "requirements": legacy_job.requirements or {},
+                        "application_url": legacy_job.application_url,
+                        "ats_type": legacy_job.ats_type or legacy_job.source or "unknown",
+                        "raw_data": legacy_job.raw_data or {},
+                    }
         except Exception:
             job_payload = None
 

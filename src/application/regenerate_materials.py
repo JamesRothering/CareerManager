@@ -73,7 +73,7 @@ async def regenerate_application_material(
 
     try:
         with session_factory() as session:
-            from src.core.models import Application, Job
+            from src.core.models import Application, Job, JobPosting, JobSnapshot
 
             app = session.get(Application, application_id)
             if app is None:
@@ -82,17 +82,29 @@ async def regenerate_application_material(
                     "error": "Application not found.",
                     "error_code": "application_not_found",
                 }
-            job = session.get(Job, app.job_id) if app.job_id else None
-            if job is None:
-                return {
-                    "ok": False,
-                    "error": "Application's job is missing.",
-                    "error_code": "job_not_found",
-                }
+            job_posting_id = getattr(app, "job_posting_id", None)
+            posting = (
+                session.get(JobPosting, job_posting_id)
+                if job_posting_id
+                else None
+            )
+            if posting is not None:
+                snapshot_id = app.job_snapshot_id or posting.latest_snapshot_id
+                snapshot = session.get(JobSnapshot, snapshot_id) if snapshot_id else None
+                from src.application.jobs import _raw_job_from_index_posting
 
-            from src.application.jobs import _job_to_raw_job  # type: ignore[attr-defined]
+                raw_job = _raw_job_from_index_posting(posting, snapshot)
+            else:
+                legacy_job = session.get(Job, app.job_id) if app.job_id else None
+                if legacy_job is None:
+                    return {
+                        "ok": False,
+                        "error": "Application's job is missing.",
+                        "error_code": "job_not_found",
+                    }
+                from src.application.jobs import _job_to_raw_job  # type: ignore[attr-defined]
 
-            raw_job = _job_to_raw_job(job)
+                raw_job = _job_to_raw_job(legacy_job)
             job_payload = serialize_job(raw_job)
     except Exception as exc:  # noqa: BLE001
         logger.exception("regenerate: failed to load application or job")
