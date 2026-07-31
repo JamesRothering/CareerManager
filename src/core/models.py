@@ -66,6 +66,12 @@ class Application(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    profile_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        default="default",
+        server_default=text("'default'"),
+    )
     # Legacy Phase 1-12 binding. New writes use ``job_posting_id`` below;
     # this column stays nullable for a migration window so historical
     # applications remain readable while the old ``jobs`` table is retired.

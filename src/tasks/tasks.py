@@ -20,12 +20,12 @@ Phase 18.1 replaced the fake-success ``status="scheduled"`` /
 * ``jobs.enrich`` calls :func:`enrich_posting` against the latest
   stored snapshot so the Phase 19 content-changed listener chain
   fires when the underlying content has drifted.
-* ``application.prepare`` walks the Application row's invariants and
-  links the latest materials onto the matching ReviewQueueEntry.
-* ``application.fill`` / ``maintenance.status_sync`` return explicit
-  ``status="not_implemented"`` because their browser / outcome-sync
-  implementations sit behind a later phase; the names + payload
-  contract stay so callers don't get a registration error.
+* ``application.prepare`` waits for generated materials, links them onto
+  ReviewQueueEntry, and idempotently enqueues ``application.fill``.
+* ``application.fill`` resolves the canonical Application target, executes
+  the Playwright ATS adapter without final submit, and persists fill details.
+  ``maintenance.status_sync`` remains explicit ``not_implemented`` until a
+  supported ATS/application-portal polling contract exists.
 * ``application.submit`` runs the Phase 17.5 pre-submit gate
   (``should_refresh(..., "before_submit")``) and parks the row at
   ``waiting_human`` via :mod:`src.tasks.gate` if the gate refuses,
@@ -134,6 +134,7 @@ class ApplicationPreparePayload(BaseModel):
 
 class ApplicationFillPayload(BaseModel):
     application_id: str
+    headless: bool = True
 
 
 class ApplicationSubmitPayload(BaseModel):
@@ -929,17 +930,24 @@ def materials_generate(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
 # ---- Tasks: application ----------------------------------------------
 
 
-@celery_app.task(name="application.prepare", base=AutoApplyTask, bind=True)
+@celery_app.task(
+    name="application.prepare",
+    base=AutoApplyTask,
+    bind=True,
+    max_retries=12,
+)
 def application_prepare(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
-    """Bind generated materials to a canonical Application review row.
+    """Wait for materials, bind review metadata, then enqueue form fill.
 
-    ``application_id`` always means ``applications.id``. Posting ids are not
-    accepted as a fallback; silently interpreting the two UUID domains was the
-    root cause of the broken Phase 17/18 task chain.
+    The plan runner may deliver this task before ``materials.generate``
+    finishes. Retrying on the persisted resume path turns the two independent
+    broker messages into an eventual, idempotent chain without confusing a
+    posting UUID with an application UUID.
     """
     args = _coerce(ApplicationPreparePayload, payload)
     logger.info("application.prepare application_id=%s", args.application_id)
 
+    from datetime import UTC, datetime  # noqa: PLC0415
     from uuid import UUID  # noqa: PLC0415
 
     from sqlalchemy import select  # noqa: PLC0415
@@ -959,6 +967,7 @@ def application_prepare(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
         }
 
     factory = get_session_factory()
+    previous_fill_task_id = None
     with factory() as session, session.begin():
         app = session.get(Application, application_uuid)
         if app is None or app.tenant_id != tenant_id:
@@ -977,45 +986,84 @@ def application_prepare(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
             .order_by(ReviewQueueEntry.created_at.desc())
             .limit(1)
         ).scalar_one_or_none()
+        if entry is None:
+            return {
+                "task": "application.prepare",
+                "application_id": str(application_uuid),
+                "status": "review_entry_not_found",
+            }
+        if not app.resume_version:
+            retries = int(getattr(self.request, "retries", 0) or 0)
+            if retries < int(getattr(self, "max_retries", 12) or 12):
+                countdown = min(5 * (2**retries), 60)
+                raise self.retry(
+                    countdown=countdown,
+                    exc=RuntimeError("application materials are not ready"),
+                )
+            return {
+                "task": "application.prepare",
+                "application_id": str(application_uuid),
+                "status": "materials_missing",
+            }
 
         preferred = app.resume_version or app.cover_letter_version
-        if entry is not None and preferred and not entry.materials_path:
+        if preferred and not entry.materials_path:
             entry.materials_path = preferred
-        if preferred and app.status == "DISCOVERED":
+        if app.status == "DISCOVERED":
             app.status = "MATERIALS_READY"
+        for event in reversed(list(app.state_history or [])):
+            if event.get("event") == "FILL_ENQUEUED":
+                previous_fill_task_id = (event.get("meta") or {}).get("fill_task_id")
+                break
+
+    fill_task_id = previous_fill_task_id
+    if fill_task_id is None:
+        from src.tasks.app import celery_app  # noqa: PLC0415
+
+        queued = celery_app.send_task(
+            "application.fill",
+            kwargs={"application_id": str(application_uuid)},
+        )
+        fill_task_id = str(queued.id)
+        with factory() as session, session.begin():
+            app = session.get(Application, application_uuid)
+            if app is not None:
+                history = list(app.state_history or [])
+                history.append(
+                    {
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "event": "FILL_ENQUEUED",
+                        "from": str(app.status),
+                        "to": str(app.status),
+                        "meta": {"fill_task_id": fill_task_id},
+                    }
+                )
+                app.state_history = history
 
     return {
         "task": "application.prepare",
         "application_id": str(application_uuid),
-        "review_entry_id": str(entry.id) if entry is not None else None,
+        "review_entry_id": str(entry.id),
         "application_status": app.status,
-        "materials_path": entry.materials_path if entry is not None else None,
-        "status": "ok",
+        "materials_path": entry.materials_path,
+        "fill_task_id": fill_task_id,
+        "status": "already_queued" if previous_fill_task_id else "fill_queued",
     }
 
 @celery_app.task(name="application.fill", base=AutoApplyTask, bind=True)
 def application_fill(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
-    """Phase 18.1: the form-fill leg of the application pipeline.
-
-    The actual browser automation lives in :mod:`src.execution` and is
-    driven from the agent loop, not from this Celery task -- we keep
-    the task registered (so the Phase 14 audit + Phase 17.5 gate
-    plumbing both work) but explicitly return ``not_implemented`` so
-    the wire isn't a fake success.
-    """
+    """Execute the canonical persisted fill-to-review use case."""
     args = _coerce(ApplicationFillPayload, payload)
     logger.info("application.fill application_id=%s", args.application_id)
-    return {
-        "task": "application.fill",
-        "application_id": args.application_id,
-        "status": "not_implemented",
-        "detail": (
-            "Browser-driven form-fill is owned by src.execution.form_filler "
-            "and the agent loop; the task is registered for audit + Beat "
-            "wiring but the worker body does not execute Playwright."
-        ),
-    }
 
+    from src.application.fill import run_application_fill  # noqa: PLC0415
+    from src.tasks.context import current_tenant_id  # noqa: PLC0415
+
+    return run_application_fill(
+        application_id=args.application_id,
+        tenant_id=current_tenant_id() or "default",
+        headless=args.headless,
+    )
 
 @celery_app.task(name="application.submit", base=AutoApplyTask, bind=True)
 def application_submit(self: AutoApplyTask, **payload: Any) -> dict[str, Any]:
@@ -1164,6 +1212,7 @@ def jd_health_check(self: AutoApplyTask) -> dict[str, Any]:
     ``archived`` don't decay further, and ``last_checked_at IS NULL``
     rows are skipped.
     """
+
     from datetime import UTC, datetime  # noqa: PLC0415
 
     from sqlalchemy import select  # noqa: PLC0415

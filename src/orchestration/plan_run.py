@@ -12,16 +12,16 @@ or a manual "Run now". The name no longer implies a specific time of day.
   structured ``disqualify_results`` for the review-queue UI.
 * **Top-N selection** -- qualified jobs ranked by ``final_score``,
   capped at ``top_n``.
-* **Enqueue** -- per top-N job: one ``materials.generate`` + one
-  ``application.prepare`` task. Both ride the Phase 14 audit/trace
-  trail; submission is never enqueued -- the operator approves via
-  the Phase 17.3 review queue UI.
+* **Enqueue** -- per top-N job: create one canonical ``Application`` and
+  ReviewQueueEntry, then enqueue ``materials.generate`` and
+  ``application.prepare`` with separate posting/application ids. Prepare waits
+  for materials and idempotently fans out ``application.fill``.
 
 Boundaries
 ----------
-* **Never auto-submits.** The orchestrator stops at
-  ``application.prepare``. ``application.submit`` lands on the
-  worker only after a human clicks "approve and submit" in the
+* **Never auto-submits.** The orchestrator stops after fill reaches
+  ``REVIEW_REQUIRED``. ``application.submit`` lands on the worker only after a
+  human approval (manually or via the explicit ``after_approval`` policy) in the
   review queue, and even then the Phase 17.5 pre-submit hard gate
   re-runs ``should_refresh(..., "before_submit")``.
 * **Per-tenant.** The Phase 14 ``tenant_id`` ContextVar must be set
@@ -414,6 +414,7 @@ async def run_plan(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 selected=selected,
+                profile_id=profile_id,
                 submit_policy=effective_submit_policy,
             )
             application_ids = [binding.application_id for binding in bindings]
@@ -1209,6 +1210,7 @@ def _create_applications_and_review_entries(
     tenant_id: str,
     run_id: str,
     selected: list[Any],
+    profile_id: str,
     submit_policy: str,
 ) -> list[ApplicationBinding]:
     """Create/reuse canonical Application rows and bind review entries.
@@ -1283,6 +1285,7 @@ def _create_applications_and_review_entries(
                     if application is None:
                         application = Application(
                             tenant_id=tenant_id,
+                            profile_id=profile_id,
                             job_id=None,
                             job_posting_id=posting_id,
                             job_snapshot_id=snapshot_id,

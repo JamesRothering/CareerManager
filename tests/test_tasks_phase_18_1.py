@@ -111,15 +111,34 @@ def test_application_prepare_returns_invalid_for_bad_uuid() -> None:
     assert out["status"] == "invalid_id"
 
 
-# ---- application.fill: explicit not_implemented -----------------------
+# ---- application.fill: canonical use-case delegation ------------------
 
 
-def test_application_fill_returns_not_implemented() -> None:
+def test_application_fill_delegates_to_persisted_use_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application_id = str(uuid4())
+    captured = {}
+
+    def run_fill(**kwargs):
+        captured.update(kwargs)
+        return {
+            "task": "application.fill",
+            "application_id": kwargs["application_id"],
+            "status": "review_required",
+        }
+
+    monkeypatch.setattr("src.application.fill.run_application_fill", run_fill)
     out = task_kinds.application_fill.apply(
-        kwargs={"application_id": str(uuid4())}
+        kwargs={"application_id": application_id, "headless": True}
     ).get()
-    assert out["status"] == "not_implemented"
-    assert "Playwright" in out["detail"]
+
+    assert out["status"] == "review_required"
+    assert captured == {
+        "application_id": application_id,
+        "tenant_id": "default",
+        "headless": True,
+    }
 
 
 # ---- application.submit: pre-submit gate wiring -----------------------

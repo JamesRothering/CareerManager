@@ -3325,19 +3325,31 @@ def _create_tracking_application(
     try:
         from src.core.config import load_config
         from src.core.database import get_session_factory
+        from src.jobs.enrich import enrich_posting
+        from src.jobs.store import JobIndexStore
+        from src.tasks.context import current_tenant_id
         from src.tracker.database import create_application
 
+        tenant_id = current_tenant_id() or "default"
         session_factory = get_session_factory(load_config())
-        with session_factory() as session:
-            db_job = _get_or_create_job_record(session, job)
+        with session_factory() as session, session.begin():
+            store = JobIndexStore(session, tenant_id=tenant_id)
+            enriched = enrich_posting(
+                store=store,
+                source=job.source,
+                source_id=job.source_id,
+                company=job.company,
+                content=_raw_job_content(job),
+            )
             application = create_application(
                 session,
-                db_job.id,
+                job_posting_id=enriched.posting_id,
+                job_snapshot_id=enriched.snapshot_id,
+                tenant_id=tenant_id,
                 match_score=match_score,
                 resume_version=str(resume_path),
                 cover_letter_version=str(cover_letter_path) if cover_letter_path else None,
             )
-            session.commit()
             return application.id
     except Exception as exc:
         logger.warning("Tracking create skipped for %s at %s: %s", job.title, job.company, exc)
@@ -3372,49 +3384,6 @@ def _sync_tracking_application(app_id: uuid.UUID, state, result, qa_responses: d
             session.commit()
     except Exception as exc:
         logger.warning("Tracking sync skipped for application %s: %s", app_id, exc)
-
-
-def _get_or_create_job_record(session, job):
-    from src.core.models import Job
-
-    existing = (
-        session.query(Job)
-        .filter(
-            Job.source == job.source,
-            Job.company == job.company,
-            Job.source_id == job.source_id,
-        )
-        .first()
-    )
-    if existing is not None:
-        return existing
-
-    if job.application_url:
-        existing = session.query(Job).filter(Job.application_url == job.application_url).first()
-        if existing is not None:
-            return existing
-
-    db_job = Job(
-        id=job.id,
-        source=job.source,
-        source_id=job.source_id,
-        company=job.company,
-        title=job.title,
-        location=job.location,
-        employment_type=job.employment_type,
-        seniority=job.seniority,
-        description=job.description,
-        requirements=job.requirements.model_dump(),
-        visa_sponsorship=job.requirements.visa_sponsorship,
-        ats_type=job.ats_type,
-        application_url=job.application_url,
-        raw_data=job.raw_data,
-        discovered_at=job.discovered_at,
-        expires_at=job.expires_at,
-    )
-    session.add(db_job)
-    session.flush()
-    return db_job
 
 
 def _isoformat(value) -> str | None:
