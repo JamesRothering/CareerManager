@@ -4,9 +4,9 @@ One invocation per scheduled Plan tick — could be hourly, daily, weekly,
 or a manual "Run now". The name no longer implies a specific time of day.
 
 * **Search** -- ``application.jobs.search_jobs`` with
-  ``use_job_index=True``, which routes through Phase 13.4
-  ``cached_search`` (cache-first, refresh stale via
-  ``jobs.freshness.should_refresh(context="generate_materials")``).
+  ``use_job_index=True``. Every invocation refreshes upstream and persists
+  results through the Job Index/Snapshot flow; only downstream scoring may
+  reuse profile-scoped acceleration data.
 * **Filter** -- ``matching.scorer.score_jobs`` with the active
   applicant profile; each ``ScoreBreakdown`` carries the Phase 16.1
   structured ``disqualify_results`` for the review-queue UI.
@@ -610,6 +610,9 @@ def _default_score_fn(
 
     raw_jobs = [_coerce_job_to_rawjob(j) for j in jobs]
     raw_jobs = [j for j in raw_jobs if j is not None]
+    from src.jobs.cache_policy import search_acceleration_policy  # noqa: PLC0415
+
+    acceleration_policy = search_acceleration_policy()
 
     # Phase 19.6: consult the A2 score cache up front. For raw_jobs
     # whose snapshot + (profile_version, scorer_version) already has a
@@ -620,13 +623,14 @@ def _default_score_fn(
     a1_rejects: list[Any] = []
     miss_raw_jobs: list[Any] = raw_jobs
     a1_resolution: dict[str, tuple[Any, Any]] = {}
-    if tenant_id and raw_jobs:
+    if tenant_id and raw_jobs and acceleration_policy["enabled"]:
         try:
             cache_hits, miss_raw_jobs, a1_resolution = _consume_score_cache(
                 raw_jobs=raw_jobs,
                 tenant_id=tenant_id,
                 profile_id=profile_id,
                 profile_data=profile_data,
+                max_age_hours=acceleration_policy["ttl_hours"],
             )
         except Exception:  # noqa: BLE001 -- cache failure is non-fatal
             logger.exception(
@@ -698,6 +702,7 @@ def _consume_score_cache(
     tenant_id: str,
     profile_id: str,
     profile_data: dict[str, Any],
+    max_age_hours: int | None = None,
 ) -> tuple[list[Any], list[Any], dict[str, tuple[Any, Any]]]:
     """Pre-pass that turns the A2 score cache into actual fast-path savings.
 
@@ -791,6 +796,7 @@ def _consume_score_cache(
                 snapshot_id=snapshot_id,
                 profile_id=profile_id,
                 profile_version=profile_version,
+                max_age_hours=max_age_hours,
             )
             if hit is None:
                 miss_raw_jobs.append(rj)

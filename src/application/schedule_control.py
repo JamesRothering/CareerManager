@@ -9,8 +9,13 @@ from src.tasks.beat import SCHEDULE_DISPLAY, get_schedule
 from src.tasks.context import tenant_header_name
 
 
-class ScheduleEntryNotFound(Exception):
+class ScheduleEntryNotFoundError(Exception):
     """Raised when a schedule entry is unknown or hidden from this surface."""
+
+
+# Backwards-compatible import for callers written before the exception
+# adopted the project-wide ``Error`` suffix convention.
+ScheduleEntryNotFound = ScheduleEntryNotFoundError
 
 
 def dispatch_schedule_entry(entry: dict[str, Any], *, tenant_id: str) -> dict[str, str]:
@@ -36,12 +41,13 @@ def run_schedule_entry_now(
     if name not in schedule or (
         user_facing_only and not bool(meta.get("user_facing", False))
     ):
-        raise ScheduleEntryNotFound(f"no such schedule entry: {name}")
+        raise ScheduleEntryNotFoundError(f"no such schedule entry: {name}")
     return dispatch_schedule_entry(schedule[name], tenant_id=tenant_id)
 
 
 __all__ = [
     "ScheduleEntryNotFound",
+    "ScheduleEntryNotFoundError",
     "dispatch_schedule_entry",
     "run_schedule_entry_now",
 ]

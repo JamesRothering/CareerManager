@@ -18,11 +18,12 @@ def client():
 
 class TestAppFactory:
     def test_create_app(self):
+        from src.version import __version__
         from src.web.app import create_app
 
         app = create_app()
         assert app.title == "AutoApply"
-        assert app.version == "0.7.0"
+        assert app.version == __version__
 
     def test_routes_registered(self):
         from src.web.app import create_app

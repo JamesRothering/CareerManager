@@ -475,15 +475,9 @@ async def _search_linkedin_with_job_index(
 
 
 def _search_cache_policy() -> dict:
-    raw = load_config().get("search_cache", {})
-    try:
-        ttl_hours = max(int(raw.get("ttl_hours", 24)), 1)
-    except (TypeError, ValueError):
-        ttl_hours = 24
-    return {
-        "enabled": bool(raw.get("enabled", True)),
-        "ttl_hours": ttl_hours,
-    }
+    from src.jobs.cache_policy import search_acceleration_policy
+
+    return search_acceleration_policy()
 
 
 def _linkedin_detail_fetch_limits() -> dict[str, int]:

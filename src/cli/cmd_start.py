@@ -15,7 +15,6 @@ import click
 
 from src.tasks.app import QUEUES
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -235,7 +234,8 @@ def _ensure_docker_services(*, timeout_seconds: int, env: dict[str, str]) -> Non
         if not _start_docker_runtime():
             raise click.ClickException(
                 "Docker is not running, and AutoApply could not locate Docker Desktop. "
-                "Start Docker/Desktop daemon once, or run with --skip-docker if Postgres/Redis already run elsewhere."
+                "Start Docker/Desktop daemon once, or run with --skip-docker if "
+                "Postgres/Redis already run elsewhere."
             )
         if not _wait_for_docker(timeout_seconds):
             raise click.ClickException(

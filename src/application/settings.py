@@ -9,6 +9,7 @@ from src.core.config import (
     save_config,
     update_llm_settings,
 )
+from src.jobs.cache_policy import search_acceleration_policy
 from src.providers import get_registry
 from src.utils.llm import detect_available_providers, get_llm_settings
 
@@ -132,11 +133,7 @@ def clear_search_cache_data() -> dict:
 
 
 def _search_cache_settings(config: dict) -> dict:
-    cache_cfg = config.get("search_cache", {})
-    return {
-        "enabled": bool(cache_cfg.get("enabled", True)),
-        "ttl_hours": int(cache_cfg.get("ttl_hours", 24)),
-    }
+    return search_acceleration_policy(config)
 
 
 def _job_index_summary() -> dict:

@@ -1443,7 +1443,7 @@ function isPrimary(provider) {
       <CardHeader class="flex flex-row items-center justify-between space-y-0">
         <CardTitle class="flex items-center gap-2 text-sm">
           <Database class="h-4 w-4 text-muted-foreground" />
-          LinkedIn Search Index
+          Search Acceleration
         </CardTitle>
         <Badge variant="secondary" class="tabular-nums">
           {{ state.saving ? "Saving..." : "Live" }}
@@ -1451,8 +1451,8 @@ function isPrimary(provider) {
       </CardHeader>
       <CardContent class="space-y-4">
         <p class="text-xs text-muted-foreground">
-          Controls whether normal Jobs searches reuse fresh Phase 13 indexed LinkedIn results. Fetch Fresh on the Jobs
-          page always bypasses this policy and updates the index.
+          Every search refreshes LinkedIn and ATS upstream data, then records it in Job Index/Snapshot. This setting only
+          controls whether unchanged snapshots may reuse recent profile-scoped scoring work.
         </p>
 
         <div class="grid gap-2 sm:grid-cols-4">
@@ -1494,7 +1494,7 @@ function isPrimary(provider) {
         </Alert>
 
         <label class="grid max-w-xs gap-1.5">
-          <span class="text-xs font-medium text-muted-foreground">Freshness TTL hours</span>
+          <span class="text-xs font-medium text-muted-foreground">Acceleration reuse TTL hours</span>
           <Input v-model="state.form.cache_ttl_hours" type="number" min="1" step="1" />
         </label>
 
@@ -1504,7 +1504,7 @@ function isPrimary(provider) {
             type="checkbox"
             class="h-4 w-4 rounded border-input accent-primary"
           />
-          <span>Use indexed results by default</span>
+          <span>Use cached scoring to accelerate fresh searches</span>
         </label>
 
         <div>
@@ -1517,7 +1517,7 @@ function isPrimary(provider) {
             @click="clearSearchCache"
           >
             <Trash2 class="h-4 w-4" />
-            {{ state.cache.clearing ? "Clearing..." : "Clear indexed searches" }}
+            {{ state.cache.clearing ? "Clearing..." : "Clear search history" }}
           </Button>
         </div>
 

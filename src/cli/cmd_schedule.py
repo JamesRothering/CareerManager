@@ -12,7 +12,7 @@ from typing import Any
 
 import click
 
-from src.application.schedule_control import ScheduleEntryNotFound, run_schedule_entry_now
+from src.application.schedule_control import ScheduleEntryNotFoundError, run_schedule_entry_now
 from src.core.models import TENANT_DEFAULT
 from src.tasks.beat import get_schedule
 
@@ -55,7 +55,7 @@ def schedule_run_now(entry_name: str, tenant: str) -> None:
     tenant_id = (tenant or TENANT_DEFAULT).strip() or TENANT_DEFAULT
     try:
         result = run_schedule_entry_now(entry_name, tenant_id=tenant_id)
-    except ScheduleEntryNotFound:
+    except ScheduleEntryNotFoundError:
         click.echo(f"no such schedule entry: {entry_name}", err=True)
         raise SystemExit(1)
     click.echo(f"enqueued {result['enqueued']} on queue '{result['queue']}'")

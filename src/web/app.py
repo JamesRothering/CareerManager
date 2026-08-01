@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.version import __version__
+
 WEB_DIR = Path(__file__).parent
 PROJECT_ROOT = WEB_DIR.parents[1]
 FRONTEND_DIST_DIR = WEB_DIR / "static" / "spa"
@@ -81,7 +83,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AutoApply",
         description="AI-powered job application automation web API",
-        version="0.7.0",
+        version=__version__,
         lifespan=_lifespan,
     )
 

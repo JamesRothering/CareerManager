@@ -4,6 +4,18 @@ All notable implementation changes to AutoApply are documented here, organized b
 
 ## [Unreleased]
 
+## [0.19.5] - 2026-07-29
+
+A five-commit stabilization release, versioned as `0.<phase>.<stage>` while AutoApply remains pre-1.0:
+
+- **0.19.1 — canonical application binding:** `applications.job_posting_id` is the primary Job Index relationship; the legacy `jobs` foreign key remains nullable for read compatibility. Review rows bind to the internal Application ID, and ambiguous legacy rows are not guessed during migration.
+- **0.19.2 — ATS discovery convergence:** Greenhouse and Lever searches now use the same always-upstream Job Index / immutable Snapshot persistence flow as LinkedIn. The active product path no longer writes through the legacy intake cache.
+- **0.19.3 — ID and submit-policy contract:** posting IDs and internal Application IDs are separate throughout plan, materials, prepare, review, and submit tasks. Legacy `auto_submit=true` maps to `after_approval`; no plan run bypasses human approval.
+- **0.19.4 — persisted fill pipeline:** `application.prepare` waits idempotently for materials and fans out `application.fill`; fill resolves profile, canonical posting/snapshot, material files, and ATS adapter inputs, then persists state, field details, uploads, screenshots, QA, and errors to the same Application row.
+- **0.19.5 — acceleration semantics and engineering quality:** every search refreshes upstream. The compatibility `search_cache` switch now controls only profile/snapshot scoring reuse, with a real maximum-age filter. Settings copy reflects this contract, project/runtime versioning shares `src/version.py`, and the outstanding Ruff findings are resolved.
+
+Database migrations in this release: `e5f1a92c7b40` then `f6a2c84d9e31`.
+
 ### Phase 19 — Per-Posting Tag Cache & Filter Fast Path (2026-05-25)
 
 Phase 19 inverts the search cache model. The `search_results` TTL short-circuit that Phase 13 used is gone (D029): it was hiding newly posted jobs between the previous scrape and TTL expiry. The cost-cutting role moves to *per-posting analysis* — A1 objective tags on `job_snapshots`, A2 score cache rows keyed by `(snapshot, profile_version, scorer_version)`. The Phase 18 fake-success `search.daily_fanout` and `search.refresh` task bodies are also gone, replaced by a real saved-search registry fanout.
