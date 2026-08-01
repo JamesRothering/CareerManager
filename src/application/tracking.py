@@ -591,7 +591,7 @@ def _serialize_company_stats(company) -> dict:
 def _serialize_application(app, job) -> dict:
     return {
         "id": str(app.id),
-        "job_id": str(getattr(app, "job_posting_id", None) or app.job_id),
+        "job_id": str(getattr(app, "job_posting_id", None) or app.job_id or job.id),
         "status": app.status,
         "match_score": app.match_score,
         "outcome": app.outcome or "pending",

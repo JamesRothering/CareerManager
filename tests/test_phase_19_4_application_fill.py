@@ -45,6 +45,15 @@ def test_fill_resolves_application_and_persists_review_result(monkeypatch) -> No
         cover_letter_version=None,
         qa_responses={"Authorized?": "Yes"},
         error_log=None,
+        state_history=[
+            {
+                "timestamp": "2026-07-29T00:00:00+00:00",
+                "event": "FILL_ENQUEUED",
+                "from": "MATERIALS_READY",
+                "to": "MATERIALS_READY",
+                "meta": {"fill_task_id": "fill-1"},
+            }
+        ],
     )
     posting = SimpleNamespace(
         id=posting_id,
@@ -92,6 +101,7 @@ def test_fill_resolves_application_and_persists_review_result(monkeypatch) -> No
         persisted.update(
             application_id=app_id,
             status=str(state.status),
+            history=list(state.history),
             payload=payload,
         )
         application.status = str(state.status)
@@ -132,6 +142,7 @@ def test_fill_resolves_application_and_persists_review_result(monkeypatch) -> No
     assert persisted["application_id"] == application_id
     assert persisted["status"] == "REVIEW_REQUIRED"
     assert persisted["payload"]["fields_filled"] == 2
+    assert persisted["history"][0]["event"] == "FILL_ENQUEUED"
 
 
 def test_fill_rejects_non_application_id_without_database_access() -> None:

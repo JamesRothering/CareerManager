@@ -64,6 +64,32 @@ def _canonical_job_view(
         raw_data=snapshot.raw_data if snapshot is not None else None,
     )
 
+def _orphan_job_view(application: Application) -> ApplicationJobView:
+    """Keep an Application visible when both referenced job rows are gone."""
+    missing_id = application.job_posting_id or application.job_id or application.id
+    return ApplicationJobView(
+        id=missing_id,
+        source=None,
+        source_id=None,
+        company="Unknown company",
+        title="Unavailable job",
+        location=None,
+        employment_type=None,
+        seniority=None,
+        description=None,
+        requirements=None,
+        visa_sponsorship=None,
+        ats_type="orphaned",
+        application_url=None,
+        raw_data={
+            "orphaned": True,
+            "job_posting_id": str(application.job_posting_id)
+            if application.job_posting_id
+            else None,
+            "legacy_job_id": str(application.job_id) if application.job_id else None,
+        },
+    )
+
 def create_application(
     session: Session,
     job_id: uuid.UUID | None = None,
@@ -262,6 +288,8 @@ def get_applications_with_jobs(
             result.append((application, _canonical_job_view(posting, snapshot)))
         elif legacy_job is not None:
             result.append((application, legacy_job))
+        else:
+            result.append((application, _orphan_job_view(application)))
     return result
 
 def get_application_counts(session: Session) -> dict[str, int]:

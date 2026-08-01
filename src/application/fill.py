@@ -115,6 +115,7 @@ def run_application_fill(
         qa_responses = dict(application.qa_responses or {}) or None
         profile_id = getattr(application, "profile_id", None) or "default"
         initial_status = _coerce_fill_start_status(application.status)
+        prior_history = list(application.state_history or [])
 
     if resume_path is None or not resume_path.exists():
         return {
@@ -151,6 +152,7 @@ def run_application_fill(
         ats_type = "company_site"
 
     state = ApplicationState(str(application_uuid), status=initial_status)
+    state.history = prior_history + state.history
     execute = executor or _execute_application
     try:
         result = run_coroutine_safely(

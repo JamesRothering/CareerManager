@@ -120,6 +120,110 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Canonical applications created after this migration intentionally have
+    # ``job_id = NULL``. Reconstruct the legacy binding before restoring the
+    # old NOT NULL contract so downgrade remains data-preserving.
+    op.execute(
+        """
+        UPDATE applications AS a
+        SET job_id = legacy.id
+        FROM job_postings AS p
+        JOIN LATERAL (
+            SELECT j.id
+            FROM jobs AS j
+            WHERE j.tenant_id = p.tenant_id
+              AND j.source = p.source
+              AND j.source_id = p.source_id
+            ORDER BY j.discovered_at DESC NULLS LAST, j.id
+            LIMIT 1
+        ) AS legacy ON TRUE
+        WHERE a.job_id IS NULL
+          AND a.job_posting_id = p.id
+        """
+    )
+    op.execute(
+        """
+        INSERT INTO jobs (
+            id, tenant_id, source, source_id, company, title, location,
+            employment_type, seniority, description, requirements, ats_type,
+            application_url, raw_data, discovered_at
+        )
+        SELECT DISTINCT ON (p.id)
+            p.id,
+            p.tenant_id,
+            p.source,
+            p.source_id,
+            p.company,
+            COALESCE(s.title, 'Unavailable job'),
+            s.location,
+            s.employment_type,
+            s.seniority,
+            s.description,
+            s.requirements,
+            p.source,
+            COALESCE(s.application_url, p.canonical_url),
+            s.raw_data,
+            COALESCE(s.scraped_at, p.first_seen_at, CURRENT_TIMESTAMP)
+        FROM applications AS a
+        JOIN job_postings AS p ON p.id = a.job_posting_id
+        LEFT JOIN job_snapshots AS s
+          ON s.id = COALESCE(a.job_snapshot_id, p.latest_snapshot_id)
+        WHERE a.job_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM jobs AS j WHERE j.id = p.id)
+        ORDER BY p.id, s.scraped_at DESC NULLS LAST
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+    op.execute(
+        """
+        UPDATE applications AS a
+        SET job_id = p.id
+        FROM job_postings AS p
+        JOIN jobs AS j
+          ON j.id = p.id
+         AND j.tenant_id = p.tenant_id
+         AND j.source = p.source
+         AND j.source_id = p.source_id
+        WHERE a.job_id IS NULL
+          AND a.job_posting_id = p.id
+        """
+    )
+    # A posting can be deleted through the new SET NULL FK. Preserve those
+    # orphaned Application rows with an explicit legacy placeholder.
+    op.execute(
+        """
+        INSERT INTO jobs (
+            id, tenant_id, source, source_id, company, title, ats_type,
+            raw_data, discovered_at
+        )
+        SELECT
+            a.id,
+            a.tenant_id,
+            'downgrade_orphan',
+            a.id::text,
+            'Unknown company',
+            'Unavailable job',
+            'unknown',
+            jsonb_build_object('_downgrade_orphan', true, 'application_id', a.id::text),
+            COALESCE(a.created_at, CURRENT_TIMESTAMP)
+        FROM applications AS a
+        WHERE a.job_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM jobs AS j WHERE j.id = a.id)
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+    op.execute(
+        """
+        UPDATE applications AS a
+        SET job_id = j.id
+        FROM jobs AS j
+        WHERE a.job_id IS NULL
+          AND j.id = a.id
+          AND j.tenant_id = a.tenant_id
+          AND j.source = 'downgrade_orphan'
+          AND j.source_id = a.id::text
+        """
+    )
     op.drop_index("ix_review_queue_application", table_name="review_queue")
     op.drop_constraint(
         "fk_review_queue_application",

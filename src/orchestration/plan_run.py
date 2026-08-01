@@ -1335,7 +1335,7 @@ def _create_applications_and_review_entries(
                         review_entry_id=str(entry.id),
                     )
                 )
-            except (ValueError, TypeError) as exc:
+            except Exception as exc:  # noqa: BLE001 -- isolate one selected row
                 logger.warning(
                     "plan_run: application binding failed for job_posting_id=%s: %s",
                     posting_value,
