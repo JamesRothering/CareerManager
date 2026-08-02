@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from src.core.models import Application, Job
+from src.core.models import Application, Job, JobPosting
 from src.core.state_machine import AppStatus
 
 logger = logging.getLogger("autoapply.tracker.analytics")
@@ -147,11 +147,14 @@ def compute_outcome_stats(session: Session) -> OutcomeStats:
 
 
 def compute_company_stats(session: Session, limit: int = 20) -> list[CompanyStats]:
-    """Compute per-company statistics, sorted by application count."""
+    """Compute per-company statistics across canonical and legacy jobs."""
+    company_expr = func.coalesce(JobPosting.company, Job.company)
     stmt = (
-        select(Job.company, func.count(Application.id).label("app_count"))
-        .join(Application, Application.job_id == Job.id)
-        .group_by(Job.company)
+        select(company_expr.label("company"), func.count(Application.id).label("app_count"))
+        .outerjoin(JobPosting, Application.job_posting_id == JobPosting.id)
+        .outerjoin(Job, Application.job_id == Job.id)
+        .where(Application.deleted_at.is_(None))
+        .group_by(company_expr)
         .order_by(func.count(Application.id).desc())
         .limit(limit)
     )
@@ -159,47 +162,48 @@ def compute_company_stats(session: Session, limit: int = 20) -> list[CompanyStat
 
     results = []
     for company_name, app_count in rows:
+        if not company_name:
+            continue
         cs = CompanyStats(company=company_name, applications=app_count)
-
-        # Get details for this company
         apps = (
             session.execute(
                 select(Application)
-                .join(Job, Application.job_id == Job.id)
-                .where(Job.company == company_name)
+                .outerjoin(JobPosting, Application.job_posting_id == JobPosting.id)
+                .outerjoin(Job, Application.job_id == Job.id)
+                .where(
+                    company_expr == company_name,
+                    Application.deleted_at.is_(None),
+                )
             )
             .scalars()
             .all()
         )
-
         scores = [a.match_score for a in apps if a.match_score is not None]
         cs.avg_match_score = sum(scores) / len(scores) if scores else 0.0
         cs.submitted = sum(1 for a in apps if a.status == AppStatus.SUBMITTED)
-
-        for a in apps:
-            if a.outcome:
-                cs.outcomes[a.outcome] = cs.outcomes.get(a.outcome, 0) + 1
-
+        for application in apps:
+            if application.outcome:
+                cs.outcomes[application.outcome] = (
+                    cs.outcomes.get(application.outcome, 0) + 1
+                )
         results.append(cs)
-
     return results
 
-
 def compute_platform_stats(session: Session) -> dict[str, dict[str, int]]:
-    """Compute per-ATS-platform statistics."""
+    """Compute per-ATS statistics across canonical and legacy jobs."""
+    source_expr = func.coalesce(JobPosting.source, Job.ats_type, "unknown")
     stmt = (
-        select(Job.ats_type, Application.status, func.count())
-        .join(Application, Application.job_id == Job.id)
-        .group_by(Job.ats_type, Application.status)
+        select(source_expr, Application.status, func.count())
+        .outerjoin(JobPosting, Application.job_posting_id == JobPosting.id)
+        .outerjoin(Job, Application.job_id == Job.id)
+        .group_by(source_expr, Application.status)
     )
     rows = session.execute(stmt).all()
 
     result: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for ats, status, count in rows:
         result[ats or "unknown"][status] = count
-
     return dict(result)
-
 
 def compute_daily_activity(
     session: Session,

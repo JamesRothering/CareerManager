@@ -66,10 +66,29 @@ class Application(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
-    job_id: Mapped[uuid.UUID] = mapped_column(
+    profile_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        default="default",
+        server_default=text("'default'"),
+    )
+    # Legacy Phase 1-12 binding. New writes use ``job_posting_id`` below;
+    # this column stays nullable for a migration window so historical
+    # applications remain readable while the old ``jobs`` table is retired.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("jobs.id", name="fk_applications_job_id"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    job_posting_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "job_postings.id",
+            name="fk_applications_job_posting",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
         index=True,
     )
     job_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -77,6 +96,12 @@ class Application(Base):
         ForeignKey("job_snapshots.id", name="fk_applications_job_snapshot"),
         nullable=True,
         index=True,
+    )
+    submit_policy: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="manual",
+        server_default=text("'manual'"),
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="DISCOVERED")
     match_score: Mapped[float | None] = mapped_column(Float)
@@ -602,6 +627,7 @@ class ReviewQueueEntry(Base):
             "created_at",
         ),
         Index("ix_review_queue_job", "job_id"),
+        Index("ix_review_queue_application", "application_id"),
         Index("ix_review_queue_run_id", "run_id"),
         # Phase 17.2 codex fix: partial unique index for pending-only.
         # Prevents the orchestrator from inserting duplicate pending
@@ -619,6 +645,15 @@ class ReviewQueueEntry(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    application_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "applications.id",
+            name="fk_review_queue_application",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     # Nullable so the orchestrator can create an entry for a job that
     # hasn't yet been persisted (search-only mode). The Phase 17.5
     # pre-submit gate requires job_id be set before "approve and

@@ -11,6 +11,7 @@ import pytest
 
 from src.orchestration.plan_run import (
     PLAN_RUN_PAUSE_SENTINEL_NAME,
+    ApplicationBinding,
     PlanRunError,
     PlanRunReport,
     plan_run_pause_sentinel_path,
@@ -65,6 +66,17 @@ class _Breakdown:
 
 def _score(_jobs, _profile_id):
     return [_Breakdown("job-1", 0.9), _Breakdown("job-2", 0.8)]
+
+
+def _prepare_applications(*, selected, **_kwargs):
+    return [
+        ApplicationBinding(
+            job_posting_id=item.job_id,
+            application_id=f"application-{item.job_id}",
+            review_entry_id=f"review-{item.job_id}",
+        )
+        for item in selected
+    ]
 
 
 def test_pause_sentinel_path(tmp_path: Path):
@@ -154,6 +166,7 @@ def test_run_plan_enqueues_materials_and_prepare(tmp_path: Path):
             search_fn=_search_with_jobs,
             score_fn=_score,
             enqueue_fn=enqueue,
+            prepare_applications_fn=_prepare_applications,
             pause_root=tmp_path,
             now=_clock(),
         )
@@ -164,11 +177,17 @@ def test_run_plan_enqueues_materials_and_prepare(tmp_path: Path):
         "materials.generate",
         {
             "job_id": "job-1",
+            "application_id": "application-job-1",
             "profile_id": "default",
             "document_types": ["resume", "cover_letter"],
         },
     ) in enqueued
-    assert ("application.prepare", {"application_id": "job-1"}) in enqueued
+    assert (
+        "application.prepare",
+        {"application_id": "application-job-1"},
+    ) in enqueued
+    assert report.application_ids == ["application-job-1"]
+    assert report.application_submit_task_ids == []
 
 
 def test_run_plan_forwards_material_overrides(tmp_path: Path):
@@ -186,6 +205,7 @@ def test_run_plan_forwards_material_overrides(tmp_path: Path):
             search_fn=_search_with_jobs,
             score_fn=_score,
             enqueue_fn=enqueue,
+            prepare_applications_fn=_prepare_applications,
             pause_root=tmp_path,
             now=_clock(),
             resume_strategy="patch_existing",

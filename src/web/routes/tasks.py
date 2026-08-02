@@ -30,7 +30,7 @@ from src.application.automation_plans import (
     schedule_entry_for_plan,
 )
 from src.application.schedule_control import (
-    ScheduleEntryNotFound,
+    ScheduleEntryNotFoundError,
     dispatch_schedule_entry,
     run_schedule_entry_now,
 )
@@ -439,7 +439,7 @@ def schedule_run_now(
 ) -> dict[str, str]:
     try:
         return run_schedule_entry_now(name, tenant_id=tenant, user_facing_only=True)
-    except ScheduleEntryNotFound as exc:
+    except ScheduleEntryNotFoundError as exc:
         raise HTTPException(
             status_code=404, detail=f"no such schedule entry: {name}"
         ) from exc

@@ -112,13 +112,25 @@ async def search_jobs(
         try:
             from src.intake.search import search_jobs as search_ats_jobs
 
-            ats_jobs = search_ats_jobs(
-                profile=profile,
-                config_dir=config_dir,
-                companies=_build_companies_filter(config_dir, ats, company),
-                parse_jds=not no_parse,
-                use_llm=use_llm,
-            )
+            ats_search_kwargs = {
+                "profile": profile,
+                "config_dir": config_dir,
+                "companies": _build_companies_filter(config_dir, ats, company),
+                "parse_jds": not no_parse,
+                "use_llm": use_llm,
+            }
+            if use_job_index:
+                ats_jobs, job_index_event = await _search_ats_with_job_index(
+                    search_kwargs=ats_search_kwargs,
+                    force_refresh=force_refresh
+                    or not (search_cache_policy or {}).get("enabled", True),
+                    freshness_hours=(search_cache_policy or {}).get("ttl_hours", 24),
+                )
+                job_index_events.append(job_index_event)
+            else:
+                # Compatibility-only path for direct library callers. All
+                # product entry points enable the Job Index.
+                ats_jobs = search_ats_jobs(**ats_search_kwargs)
             counts["ats"] = len(ats_jobs)
             jobs.extend(ats_jobs)
         except Exception as exc:
@@ -289,6 +301,94 @@ async def search_jobs(
     }
 
 
+async def _search_ats_with_job_index(
+    *,
+    search_kwargs: dict,
+    force_refresh: bool,
+    freshness_hours: int,
+) -> tuple[list, dict]:
+    """Run Greenhouse/Lever discovery through Job Index and snapshots.
+
+    ``src.intake.search.search_jobs`` remains a low-level connector adapter,
+    but it no longer owns product persistence. Every active ATS search is
+    recorded as a ``SearchQuery`` and each returned job is enriched into an
+    immutable ``JobSnapshot`` before the response leaves this function.
+    """
+    from src.cache import get_cache
+    from src.core.database import get_session_factory
+    from src.intake.search import search_jobs as search_ats_jobs
+    from src.jobs.enrich import enrich_posting
+    from src.jobs.search import cached_search
+    from src.jobs.store import JobIndexStore
+
+    scraped_jobs: list = []
+    params = _ats_job_index_params(search_kwargs)
+
+    def fetch_and_capture() -> list:
+        result = search_ats_jobs(**search_kwargs)
+        scraped_jobs[:] = list(result)
+        return scraped_jobs
+
+    try:
+        session_factory = get_session_factory(load_config())
+        with session_factory() as session, session.begin():
+            store = JobIndexStore(session)
+            outcome = await cached_search(
+                store=store,
+                cache=get_cache(),
+                source="ats",
+                params=params,
+                fetch_fn=fetch_and_capture,
+                force_refresh=force_refresh,
+                freshness_hours=freshness_hours,
+            )
+            if scraped_jobs:
+                for job in scraped_jobs:
+                    enrich_posting(
+                        store=store,
+                        source=job.source,
+                        source_id=job.source_id,
+                        company=job.company,
+                        content=_raw_job_content(job),
+                    )
+                jobs = scraped_jobs
+            else:
+                jobs = _raw_jobs_from_index_postings(session, outcome.postings)
+
+            if outcome.refresh_failed and not jobs:
+                raise RuntimeError(outcome.last_error or "ATS refresh failed")
+
+            return jobs, {
+                "source": "ats",
+                "ok": True,
+                "cached": outcome.cached,
+                "stale": outcome.stale,
+                "force_refresh": force_refresh,
+                "query_id": str(outcome.query_id),
+                "last_run_at": _isoformat(outcome.last_run_at),
+                "last_success_at": _isoformat(outcome.last_success_at),
+                "last_error": outcome.last_error,
+                "counts": outcome.counts,
+                "connectors": sorted((search_kwargs.get("companies") or {}).keys()),
+            }
+    except Exception as exc:
+        # A missing migration must not make the live search unusable. The
+        # fallback still hits upstream and the event makes the persistence
+        # failure visible to the UI/operator.
+        logger.warning("ATS Job Index path failed; falling back to live search: %s", exc)
+        jobs = list(search_ats_jobs(**search_kwargs))
+        return jobs, {
+            "source": "ats",
+            "ok": False,
+            "cached": False,
+            "stale": False,
+            "force_refresh": True,
+            "fallback_live": True,
+            "error": str(exc),
+            "connectors": sorted((search_kwargs.get("companies") or {}).keys()),
+        }
+
+
 async def _search_linkedin_with_job_index(
     *,
     search_kwargs: dict,
@@ -375,15 +475,9 @@ async def _search_linkedin_with_job_index(
 
 
 def _search_cache_policy() -> dict:
-    raw = load_config().get("search_cache", {})
-    try:
-        ttl_hours = max(int(raw.get("ttl_hours", 24)), 1)
-    except (TypeError, ValueError):
-        ttl_hours = 24
-    return {
-        "enabled": bool(raw.get("enabled", True)),
-        "ttl_hours": ttl_hours,
-    }
+    from src.jobs.cache_policy import search_acceleration_policy
+
+    return search_acceleration_policy()
 
 
 def _linkedin_detail_fetch_limits() -> dict[str, int]:
@@ -406,6 +500,19 @@ def _positive_int_setting(value, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(parsed, 0)
+
+
+def _ats_job_index_params(search_kwargs: dict) -> dict:
+    companies = search_kwargs.get("companies") or {}
+    return {
+        "profile": search_kwargs.get("profile") or "",
+        "companies": {
+            str(connector): sorted(str(slug) for slug in (slugs or []))
+            for connector, slugs in sorted(companies.items())
+        },
+        "parse_jds": bool(search_kwargs.get("parse_jds", True)),
+        "use_llm": bool(search_kwargs.get("use_llm", False)),
+    }
 
 
 def _linkedin_job_index_params(search_kwargs: dict) -> dict:
@@ -3212,19 +3319,31 @@ def _create_tracking_application(
     try:
         from src.core.config import load_config
         from src.core.database import get_session_factory
+        from src.jobs.enrich import enrich_posting
+        from src.jobs.store import JobIndexStore
+        from src.tasks.context import current_tenant_id
         from src.tracker.database import create_application
 
+        tenant_id = current_tenant_id() or "default"
         session_factory = get_session_factory(load_config())
-        with session_factory() as session:
-            db_job = _get_or_create_job_record(session, job)
+        with session_factory() as session, session.begin():
+            store = JobIndexStore(session, tenant_id=tenant_id)
+            enriched = enrich_posting(
+                store=store,
+                source=job.source,
+                source_id=job.source_id,
+                company=job.company,
+                content=_raw_job_content(job),
+            )
             application = create_application(
                 session,
-                db_job.id,
+                job_posting_id=enriched.posting_id,
+                job_snapshot_id=enriched.snapshot_id,
+                tenant_id=tenant_id,
                 match_score=match_score,
                 resume_version=str(resume_path),
                 cover_letter_version=str(cover_letter_path) if cover_letter_path else None,
             )
-            session.commit()
             return application.id
     except Exception as exc:
         logger.warning("Tracking create skipped for %s at %s: %s", job.title, job.company, exc)
@@ -3259,49 +3378,6 @@ def _sync_tracking_application(app_id: uuid.UUID, state, result, qa_responses: d
             session.commit()
     except Exception as exc:
         logger.warning("Tracking sync skipped for application %s: %s", app_id, exc)
-
-
-def _get_or_create_job_record(session, job):
-    from src.core.models import Job
-
-    existing = (
-        session.query(Job)
-        .filter(
-            Job.source == job.source,
-            Job.company == job.company,
-            Job.source_id == job.source_id,
-        )
-        .first()
-    )
-    if existing is not None:
-        return existing
-
-    if job.application_url:
-        existing = session.query(Job).filter(Job.application_url == job.application_url).first()
-        if existing is not None:
-            return existing
-
-    db_job = Job(
-        id=job.id,
-        source=job.source,
-        source_id=job.source_id,
-        company=job.company,
-        title=job.title,
-        location=job.location,
-        employment_type=job.employment_type,
-        seniority=job.seniority,
-        description=job.description,
-        requirements=job.requirements.model_dump(),
-        visa_sponsorship=job.requirements.visa_sponsorship,
-        ats_type=job.ats_type,
-        application_url=job.application_url,
-        raw_data=job.raw_data,
-        discovered_at=job.discovered_at,
-        expires_at=job.expires_at,
-    )
-    session.add(db_job)
-    session.flush()
-    return db_job
 
 
 def _isoformat(value) -> str | None:

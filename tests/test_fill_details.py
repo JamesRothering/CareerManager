@@ -32,7 +32,9 @@ class _DummyAdapter(BaseATSAdapter):
     async def fill_form(self, page, profile_data, qa_responses=None):  # pragma: no cover
         raise NotImplementedError
 
-    async def upload_files(self, page, resume_path=None, cover_letter_path=None):  # pragma: no cover
+    async def upload_files(
+        self, page, resume_path=None, cover_letter_path=None
+    ):  # pragma: no cover
         raise NotImplementedError
 
     async def answer_questions(self, page, qa_responses=None):  # pragma: no cover

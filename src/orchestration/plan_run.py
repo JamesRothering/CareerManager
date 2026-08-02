@@ -4,24 +4,24 @@ One invocation per scheduled Plan tick — could be hourly, daily, weekly,
 or a manual "Run now". The name no longer implies a specific time of day.
 
 * **Search** -- ``application.jobs.search_jobs`` with
-  ``use_job_index=True``, which routes through Phase 13.4
-  ``cached_search`` (cache-first, refresh stale via
-  ``jobs.freshness.should_refresh(context="generate_materials")``).
+  ``use_job_index=True``. Every invocation refreshes upstream and persists
+  results through the Job Index/Snapshot flow; only downstream scoring may
+  reuse profile-scoped acceleration data.
 * **Filter** -- ``matching.scorer.score_jobs`` with the active
   applicant profile; each ``ScoreBreakdown`` carries the Phase 16.1
   structured ``disqualify_results`` for the review-queue UI.
 * **Top-N selection** -- qualified jobs ranked by ``final_score``,
   capped at ``top_n``.
-* **Enqueue** -- per top-N job: one ``materials.generate`` + one
-  ``application.prepare`` task. Both ride the Phase 14 audit/trace
-  trail; submission is never enqueued -- the operator approves via
-  the Phase 17.3 review queue UI.
+* **Enqueue** -- per top-N job: create one canonical ``Application`` and
+  ReviewQueueEntry, then enqueue ``materials.generate`` and
+  ``application.prepare`` with separate posting/application ids. Prepare waits
+  for materials and idempotently fans out ``application.fill``.
 
 Boundaries
 ----------
-* **Never auto-submits.** The orchestrator stops at
-  ``application.prepare``. ``application.submit`` lands on the
-  worker only after a human clicks "approve and submit" in the
+* **Never auto-submits.** The orchestrator stops after fill reaches
+  ``REVIEW_REQUIRED``. ``application.submit`` lands on the worker only after a
+  human approval (manually or via the explicit ``after_approval`` policy) in the
   review queue, and even then the Phase 17.5 pre-submit hard gate
   re-runs ``should_refresh(..., "before_submit")``.
 * **Per-tenant.** The Phase 14 ``tenant_id`` ContextVar must be set
@@ -87,6 +87,7 @@ class PlanRunReport:
     materials_task_ids: list[str] = field(default_factory=list)
     application_prepare_task_ids: list[str] = field(default_factory=list)
     application_submit_task_ids: list[str] = field(default_factory=list)
+    application_ids: list[str] = field(default_factory=list)
     review_entry_ids: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     estimated_cost_usd: float = 0.0  # Phase 17.6 fills this with real telemetry
@@ -100,9 +101,19 @@ class PlanRunReport:
 # these to ``application.jobs.search_jobs`` /
 # ``matching.scorer.score_jobs`` / Celery's ``send_task``; tests inject
 # stubs that don't touch Redis or the network.
+@dataclass(frozen=True)
+class ApplicationBinding:
+    """Canonical ids created before task fan-out for one selected posting."""
+
+    job_posting_id: str
+    application_id: str
+    review_entry_id: str
+
+
 SearchFn = Callable[..., Awaitable[dict[str, Any]]]
 ScoreFn = Callable[[list[Any], Any], list[Any]]
 EnqueueFn = Callable[[str, dict[str, Any]], str]
+PrepareApplicationsFn = Callable[..., list[ApplicationBinding]]
 
 
 class PlanRunError(Exception):
@@ -158,6 +169,23 @@ def _borderline_count(breakdowns: list[Any]) -> int:
     )
 
 
+def normalize_submit_policy(*, submit_policy: str | None, auto_submit: bool) -> str:
+    """Resolve the explicit policy and the deprecated boolean alias.
+
+    ``auto_submit=True`` never means "submit immediately". During the
+    compatibility window it maps to ``after_approval`` so a human decision
+    and the pre-submit freshness gate remain mandatory.
+    """
+    if submit_policy is None:
+        return "after_approval" if auto_submit else "manual"
+    normalized = str(submit_policy).strip().lower()
+    if normalized not in {"manual", "after_approval"}:
+        raise PlanRunError(
+            "submit_policy must be 'manual' or 'after_approval'"
+        )
+    return normalized
+
+
 async def run_plan(
     *,
     tenant_id: str,
@@ -166,6 +194,7 @@ async def run_plan(
     top_n: int = 10,
     dry_run: bool = False,
     auto_submit: bool = False,
+    submit_policy: str | None = None,
     skip_previously_applied: bool = True,
     scrape_enabled: bool = True,
     # Phase 17.8 / 18.x: optional per-plan material strategy overrides.
@@ -186,6 +215,7 @@ async def run_plan(
     search_fn: SearchFn | None = None,
     score_fn: ScoreFn | None = None,
     enqueue_fn: EnqueueFn | None = None,
+    prepare_applications_fn: PrepareApplicationsFn | None = None,
     pause_root: Path | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> PlanRunReport:
@@ -221,6 +251,10 @@ async def run_plan(
     """
     if not tenant_id:
         raise PlanRunError("tenant_id is required")
+    effective_submit_policy = normalize_submit_policy(
+        submit_policy=submit_policy,
+        auto_submit=auto_submit,
+    )
 
     now_fn = now or _now_utc
     started_at = now_fn()
@@ -360,51 +394,56 @@ async def run_plan(
     if skip_previously_applied:
         selected = _drop_previously_applied(tenant_id=tenant_id, selected=selected)
 
-    # ----- 3. Persist review-queue rows + enqueue (skipped on dry_run)
-    #
-    # Codex P1 fix (Phase 17.2 promise): the orchestrator is the source
-    # of truth for "a job is ready for human review", so it creates the
-    # review_queue rows directly in the same logical step it enqueues
-    # the materials task. The downstream application.prepare task body
-    # is still a stub (Phase 18 / later will fill it in with the
-    # form-filler agent's prepare step); leaving the review_queue
-    # population to it would mean the kanban stays empty even after a
-    # successful plan run.
+    # ----- 3. Create canonical applications, review rows, then enqueue.
     materials_ids: list[str] = []
     application_prepare_ids: list[str] = []
+    # Submission is intentionally not enqueued by the plan. The policy is
+    # persisted on Application and evaluated only after human approval.
     application_submit_ids: list[str] = []
+    application_ids: list[str] = []
     review_entry_ids: list[str] = []
 
     if not dry_run:
         enqueue_fn = enqueue_fn or _default_enqueue_fn
-        # Persist review entries first so the kanban shows them even if
-        # the enqueue step trips on broker hiccups later. The factory is
-        # late-imported to keep this module light for the test harness.
+        prepare_applications_fn = (
+            prepare_applications_fn or _create_applications_and_review_entries
+        )
+        bindings: list[ApplicationBinding] = []
         try:
-            review_entry_ids = _create_review_entries(
+            bindings = prepare_applications_fn(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 selected=selected,
+                profile_id=profile_id,
+                submit_policy=effective_submit_policy,
             )
+            application_ids = [binding.application_id for binding in bindings]
+            review_entry_ids = [binding.review_entry_id for binding in bindings]
         except Exception as exc:  # noqa: BLE001 -- non-fatal; record + continue
-            logger.exception("plan_run: review_queue insert failed")
-            errors.append(f"review_queue: {type(exc).__name__}: {exc}")
+            logger.exception("plan_run: application persistence failed")
+            errors.append(f"applications: {type(exc).__name__}: {exc}")
 
+        bindings_by_posting = {
+            binding.job_posting_id: binding for binding in bindings
+        }
         for breakdown in selected:
-            job_id = getattr(breakdown, "job_id", None)
-            if not job_id:
-                errors.append("score breakdown missing job_id; skipping enqueue")
+            job_id = str(getattr(breakdown, "job_id", "") or "")
+            binding = bindings_by_posting.get(job_id)
+            if binding is None:
+                errors.append(
+                    f"no Application binding for job_posting_id={job_id}; "
+                    "skipping enqueue"
+                )
                 continue
             try:
                 materials_payload: dict[str, Any] = {
-                    "job_id": str(job_id),
+                    "job_id": job_id,
+                    "application_id": binding.application_id,
                     "profile_id": profile_id,
                     "document_types": ["resume", "cover_letter"],
                 }
-                # Only include override keys when the plan actually
-                # provided them, so the consuming task can distinguish
-                # "user didn't say" (fall back to Settings default)
-                # from "user explicitly chose this".
+                # Only include override keys when the plan actually provided
+                # them, preserving Settings defaults for omitted values.
                 if resume_strategy:
                     materials_payload["resume_strategy"] = resume_strategy
                 if resume_template_id:
@@ -444,10 +483,7 @@ async def run_plan(
                         cover_letter_patch_allow_add_remove_bullets
                     )
 
-                mat_id = enqueue_fn(
-                    "materials.generate",
-                    materials_payload,
-                )
+                mat_id = enqueue_fn("materials.generate", materials_payload)
                 materials_ids.append(mat_id)
             except Exception as exc:  # noqa: BLE001
                 errors.append(
@@ -456,32 +492,15 @@ async def run_plan(
                 continue
 
             try:
-                # Phase 17.2 review-queue entries are now persisted
-                # above; application.prepare still gets enqueued so the
-                # future form-filler agent has its work item, but the
-                # kanban is no longer waiting on that stub to populate.
                 prep_id = enqueue_fn(
                     "application.prepare",
-                    {"application_id": str(job_id)},
+                    {"application_id": binding.application_id},
                 )
                 application_prepare_ids.append(prep_id)
             except Exception as exc:  # noqa: BLE001
                 errors.append(
                     f"application.prepare enqueue: {type(exc).__name__}: {exc}"
                 )
-
-            if auto_submit:
-                try:
-                    submit_id = enqueue_fn(
-                        "application.submit",
-                        {"application_id": str(job_id)},
-                    )
-                    application_submit_ids.append(submit_id)
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(
-                        f"application.submit enqueue: {type(exc).__name__}: {exc}"
-                    )
-
     finished_at = now_fn()
     status = "ok" if not errors else "error"
     return PlanRunReport(
@@ -502,6 +521,7 @@ async def run_plan(
         materials_task_ids=materials_ids,
         application_prepare_task_ids=application_prepare_ids,
         application_submit_task_ids=application_submit_ids,
+        application_ids=application_ids,
         review_entry_ids=review_entry_ids,
         errors=errors,
         dry_run=dry_run,
@@ -590,6 +610,9 @@ def _default_score_fn(
 
     raw_jobs = [_coerce_job_to_rawjob(j) for j in jobs]
     raw_jobs = [j for j in raw_jobs if j is not None]
+    from src.jobs.cache_policy import search_acceleration_policy  # noqa: PLC0415
+
+    acceleration_policy = search_acceleration_policy()
 
     # Phase 19.6: consult the A2 score cache up front. For raw_jobs
     # whose snapshot + (profile_version, scorer_version) already has a
@@ -600,13 +623,14 @@ def _default_score_fn(
     a1_rejects: list[Any] = []
     miss_raw_jobs: list[Any] = raw_jobs
     a1_resolution: dict[str, tuple[Any, Any]] = {}
-    if tenant_id and raw_jobs:
+    if tenant_id and raw_jobs and acceleration_policy["enabled"]:
         try:
             cache_hits, miss_raw_jobs, a1_resolution = _consume_score_cache(
                 raw_jobs=raw_jobs,
                 tenant_id=tenant_id,
                 profile_id=profile_id,
                 profile_data=profile_data,
+                max_age_hours=acceleration_policy["ttl_hours"],
             )
         except Exception:  # noqa: BLE001 -- cache failure is non-fatal
             logger.exception(
@@ -678,6 +702,7 @@ def _consume_score_cache(
     tenant_id: str,
     profile_id: str,
     profile_data: dict[str, Any],
+    max_age_hours: int | None = None,
 ) -> tuple[list[Any], list[Any], dict[str, tuple[Any, Any]]]:
     """Pre-pass that turns the A2 score cache into actual fast-path savings.
 
@@ -771,6 +796,7 @@ def _consume_score_cache(
                 snapshot_id=snapshot_id,
                 profile_id=profile_id,
                 profile_version=profile_version,
+                max_age_hours=max_age_hours,
             )
             if hit is None:
                 miss_raw_jobs.append(rj)
@@ -1185,73 +1211,137 @@ def _resolve_and_patch_posting_ids(
             bd.job_snapshot_id = str(snapshot_id)
 
 
-def _create_review_entries(
+def _create_applications_and_review_entries(
     *,
     tenant_id: str,
     run_id: str,
     selected: list[Any],
-) -> list[str]:
-    """Insert one ``pending`` review_queue row per selected breakdown.
+    profile_id: str,
+    submit_policy: str,
+) -> list[ApplicationBinding]:
+    """Create/reuse canonical Application rows and bind review entries.
 
-    Codex P1 fix: the Phase 17.2 promise is "the operator wakes up to
-    /api/review populated with the previous run's matches". Persisting
-    from the orchestrator keeps that promise true even though the
-    downstream ``application.prepare`` task body is still a stub
-    (Phase 18+ will wire the form-filler agent into it).
-
-    Each entry is bound to:
-      * ``job_id`` from the breakdown (Phase 13 audit link)
-      * ``job_snapshot_id`` from the breakdown
-      * ``run_id`` from this plan run (so the digest groups them)
-      * the structured ``score_breakdown`` so the popover renders
-        without re-scoring
-      * denormalised ``company`` / ``title`` so the kanban renders
-        without joining ``jobs``
-
-    Returns the list of inserted entry ids (as strings).
+    A posting id and an application id are deliberately different domains.
+    This is the only plan-run boundary that converts a selected
+    ``JobPosting`` into an internal ``Application``; all downstream tasks
+    receive the resulting application id.
     """
+    import uuid as uuid_mod  # noqa: PLC0415
+
+    from sqlalchemy import select  # noqa: PLC0415
+
     from src.application.review import CreateEntryArgs, create_entry  # noqa: PLC0415
     from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.core.models import (  # noqa: PLC0415
+        Application,
+        JobPosting,
+        JobSnapshot,
+    )
 
     if not selected:
         return []
 
     factory = get_session_factory()
-    inserted: list[str] = []
+    bindings: list[ApplicationBinding] = []
     with factory() as session, session.begin():
         for breakdown in selected:
+            posting_value = getattr(breakdown, "job_id", None)
+            snapshot_value = getattr(breakdown, "job_snapshot_id", None)
             try:
-                bd_dict = (
-                    breakdown.to_dict()
-                    if hasattr(breakdown, "to_dict")
-                    else {}
+                posting_id = uuid_mod.UUID(str(posting_value))
+                snapshot_id = (
+                    uuid_mod.UUID(str(snapshot_value))
+                    if snapshot_value
+                    else None
                 )
-            except Exception:  # noqa: BLE001 -- defensive
-                bd_dict = {}
-            try:
                 with session.begin_nested():
+                    posting = session.get(JobPosting, posting_id)
+                    if posting is None or posting.tenant_id != tenant_id:
+                        raise ValueError(
+                            f"JobPosting {posting_id} not found for tenant {tenant_id}"
+                        )
+                    if snapshot_id is None:
+                        snapshot_id = posting.latest_snapshot_id
+                    if snapshot_id is not None:
+                        snapshot = session.get(JobSnapshot, snapshot_id)
+                        if (
+                            snapshot is None
+                            or snapshot.tenant_id != tenant_id
+                            or snapshot.posting_id != posting_id
+                        ):
+                            raise ValueError(
+                                f"JobSnapshot {snapshot_id} is not bound to {posting_id}"
+                            )
+
+                    stmt = (
+                        select(Application)
+                        .where(
+                            Application.tenant_id == tenant_id,
+                            Application.job_posting_id == posting_id,
+                            Application.status != "FAILED",
+                        )
+                        .order_by(Application.created_at.desc())
+                        .limit(1)
+                    )
+                    if snapshot_id is not None:
+                        stmt = stmt.where(
+                            Application.job_snapshot_id == snapshot_id
+                        )
+                    application = session.execute(stmt).scalar_one_or_none()
+                    if application is None:
+                        application = Application(
+                            tenant_id=tenant_id,
+                            profile_id=profile_id,
+                            job_id=None,
+                            job_posting_id=posting_id,
+                            job_snapshot_id=snapshot_id,
+                            status="DISCOVERED",
+                            match_score=getattr(breakdown, "final_score", None),
+                            submit_policy=submit_policy,
+                        )
+                        session.add(application)
+                        session.flush()
+                    elif submit_policy == "after_approval":
+                        # An explicit opt-in may upgrade an existing manual
+                        # draft; never downgrade after_approval implicitly.
+                        application.submit_policy = submit_policy
+
+                    try:
+                        score_breakdown = (
+                            breakdown.to_dict()
+                            if hasattr(breakdown, "to_dict")
+                            else {}
+                        )
+                    except Exception:  # noqa: BLE001 -- defensive audit payload
+                        score_breakdown = {}
                     entry = create_entry(
                         session,
                         CreateEntryArgs(
                             tenant_id=tenant_id,
-                            job_id=getattr(breakdown, "job_id", None),
-                            job_snapshot_id=getattr(breakdown, "job_snapshot_id", None),
+                            application_id=application.id,
+                            job_id=posting_id,
+                            job_snapshot_id=snapshot_id,
                             materials_path=None,
-                            score_breakdown=bd_dict,
+                            score_breakdown=score_breakdown,
                             company=getattr(breakdown, "company", None),
                             title=getattr(breakdown, "title", None),
                             run_id=run_id,
                         ),
                     )
-                inserted.append(str(entry.id))
-            except Exception as exc:  # noqa: BLE001 -- one bad row should not hide the rest
+                bindings.append(
+                    ApplicationBinding(
+                        job_posting_id=str(posting_id),
+                        application_id=str(application.id),
+                        review_entry_id=str(entry.id),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 -- isolate one selected row
                 logger.warning(
-                    "plan_run: review_queue row insert failed for job_id=%s: %s",
-                    getattr(breakdown, "job_id", None),
+                    "plan_run: application binding failed for job_posting_id=%s: %s",
+                    posting_value,
                     exc,
                 )
-    return inserted
-
+    return bindings
 
 def _drop_previously_applied(*, tenant_id: str, selected: list[Any]) -> list[Any]:
     """Remove jobs that already have an application record for this tenant."""
@@ -1281,9 +1371,9 @@ def _drop_previously_applied(*, tenant_id: str, selected: list[Any]) -> list[Any
     with factory() as session:
         existing = set(
             session.execute(
-                select(Application.job_id).where(
+                select(Application.job_posting_id).where(
                     Application.tenant_id == tenant_id,
-                    Application.job_id.in_(job_ids),
+                    Application.job_posting_id.in_(job_ids),
                     Application.status != "FAILED",
                 )
             ).scalars()
@@ -1301,6 +1391,7 @@ def _default_enqueue_fn(task_name: str, payload: dict[str, Any]) -> str:
 
 __all__ = [
     "PLAN_RUN_PAUSE_SENTINEL_NAME",
+    "ApplicationBinding",
     "PlanRunError",
     "PlanRunReport",
     "plan_run_pause_sentinel_path",

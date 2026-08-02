@@ -27,14 +27,11 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
-from collections.abc import Coroutine
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any
 
 from src.core.config import load_config
-
-_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +164,7 @@ def llm_call_gate(provider_id: str) -> Iterator[None]:
         prov_sem.release()
 
 
-def run_coroutine_safely(coro: Coroutine[Any, Any, _T]) -> _T:
+def run_coroutine_safely[T](coro: Coroutine[Any, Any, T]) -> T:
     """Run ``coro`` whether or not the caller is inside an event loop.
 
     ``asyncio.run`` raises ``RuntimeError`` when called from a coroutine

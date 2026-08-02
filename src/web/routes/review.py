@@ -191,8 +191,11 @@ async def bulk_approve_route(payload: BulkActionPayload) -> dict[str, Any]:
     """
     if not payload.entry_ids:
         raise HTTPException(400, "entry_ids is required")
+    from src.core.models import Application  # noqa: PLC0415
+
     tenant = _tenant()
     factory = get_session_factory()
+    auto_submit_application_ids = []
     with factory() as session, session.begin():
         # Tenant guard: filter to ids that belong to this tenant.
         owned = []
@@ -206,7 +209,38 @@ async def bulk_approve_route(payload: BulkActionPayload) -> dict[str, Any]:
             reviewer=payload.reviewer,
             reason=payload.reason,
         )
-    return {"ok": True, **result.to_dict()}
+        for succeeded_id in result.succeeded:
+            entry = get_entry_db(session, succeeded_id)
+            application = (
+                session.get(Application, entry.application_id)
+                if entry is not None and entry.application_id is not None
+                else None
+            )
+            if (
+                application is not None
+                and getattr(application, "submit_policy", "manual")
+                == "after_approval"
+            ):
+                auto_submit_application_ids.append(application.id)
+
+    submit_task_ids = []
+    if auto_submit_application_ids:
+        try:
+            from src.tasks.app import celery_app  # noqa: PLC0415
+
+            for application_id in auto_submit_application_ids:
+                queued = celery_app.send_task(
+                    "application.submit",
+                    kwargs={"application_id": str(application_id)},
+                )
+                submit_task_ids.append(str(queued.id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "review bulk_approve_route: auto-submit enqueue failed: %s",
+                exc,
+                exc_info=True,
+            )
+    return {"ok": True, **result.to_dict(), "submit_task_ids": submit_task_ids}
 
 
 @router.post("/bulk/reject")
@@ -261,20 +295,50 @@ async def bulk_reject_by_filter_route(
 async def approve_route(
     entry_id: str, payload: ReviewActionPayload
 ) -> dict[str, Any]:
+    """Approve a review row and honor its Application submit policy."""
+    from src.core.models import Application  # noqa: PLC0415
+
     factory = get_session_factory()
+    application_id = None
+    submit_policy = "manual"
     with factory() as session, session.begin():
-        # Tenant isolation: load + check before transitioning.
+        # Commit the approval before enqueueing submit so a fast eager worker
+        # cannot observe the review row in its old pending state.
         entry = get_entry_db(session, entry_id)
         if entry is None or entry.tenant_id != _tenant():
             raise HTTPException(404, "review entry not found")
-        return _wrap_transition(
+        result = _wrap_transition(
             approve_entry,
             session,
             entry_id,
             reviewer=payload.reviewer,
             reason=payload.reason,
         )
+        if entry.application_id is not None:
+            application = session.get(Application, entry.application_id)
+            if application is not None:
+                application_id = application.id
+                submit_policy = getattr(application, "submit_policy", "manual")
 
+    submit_task_id = None
+    if application_id is not None and submit_policy == "after_approval":
+        try:
+            from src.tasks.app import celery_app  # noqa: PLC0415
+
+            queued = celery_app.send_task(
+                "application.submit",
+                kwargs={"application_id": str(application_id)},
+            )
+            submit_task_id = str(queued.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "review approve_route: auto-submit enqueue failed: %s",
+                exc,
+                exc_info=True,
+            )
+    result["submit_task_id"] = submit_task_id
+    result["submit_policy"] = submit_policy
+    return result
 
 @router.post("/{entry_id}/reject")
 async def reject_route(
@@ -350,6 +414,11 @@ async def refresh_route(
                     "materials.generate",
                     kwargs={
                         "job_id": str(entry.job_id),
+                        "application_id": (
+                            str(entry.application_id)
+                            if entry.application_id
+                            else None
+                        ),
                         "document_types": ["resume", "cover_letter"],
                     },
                 )
@@ -416,12 +485,17 @@ async def submit_route(
                 ),
             }
 
-        app = None
-        if entry.job_id is not None:
+        app = (
+            session.get(Application, entry.application_id)
+            if entry.application_id is not None
+            else None
+        )
+        if app is None and entry.job_id is not None:
+            # Compatibility for review rows created before 0.19.1.
             app = session.execute(
                 select(Application)
                 .where(Application.tenant_id == entry.tenant_id)
-                .where(Application.job_id == entry.job_id)
+                .where(Application.job_posting_id == entry.job_id)
                 .order_by(Application.created_at.desc())
                 .limit(1)
             ).scalar_one_or_none()

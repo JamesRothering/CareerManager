@@ -190,7 +190,10 @@ TASK_KIND_DISPLAY: dict[str, dict[str, str]] = {
     },
     "posting.tag": {
         "display_name": "Posting tag",
-        "description": "Computes objective tags (work mode, level, sponsorship, ...) for one snapshot.",
+        "description": (
+            "Computes objective tags (work mode, level, sponsorship, ...) "
+            "for one snapshot."
+        ),
     },
     "posting.tag_backfill": {
         "display_name": "Posting tag backfill",

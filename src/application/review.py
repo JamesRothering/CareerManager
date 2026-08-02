@@ -63,6 +63,7 @@ class CreateEntryArgs:
     company: str | None
     title: str | None
     run_id: str | None = None
+    application_id: uuid.UUID | str | None = None
 
 
 def serialize_entry(entry: ReviewQueueEntry) -> dict[str, Any]:
@@ -74,6 +75,7 @@ def serialize_entry(entry: ReviewQueueEntry) -> dict[str, Any]:
     return {
         "id": str(entry.id),
         "tenant_id": entry.tenant_id,
+        "application_id": str(entry.application_id) if entry.application_id else None,
         "job_id": str(entry.job_id) if entry.job_id else None,
         "job_snapshot_id": (
             str(entry.job_snapshot_id) if entry.job_snapshot_id else None
@@ -118,31 +120,53 @@ def create_entry(session: Session, args: CreateEntryArgs) -> ReviewQueueEntry:
     legitimately re-fire for the same job across re-runs (e.g. after a
     transient broker hiccup).
     """
+    application_uuid = _coerce_uuid(args.application_id)
     job_uuid = _coerce_uuid(args.job_id)
     snap_uuid = _coerce_uuid(args.job_snapshot_id)
 
-    existing = (
-        session.execute(
-            select(ReviewQueueEntry).where(
-                ReviewQueueEntry.tenant_id == args.tenant_id,
-                ReviewQueueEntry.job_id == job_uuid,
-                ReviewQueueEntry.job_snapshot_id == snap_uuid,
-                ReviewQueueEntry.status == "pending",
-            )
-        )
-        .scalars()
-        .first()
+    existing_query = select(ReviewQueueEntry).where(
+        ReviewQueueEntry.tenant_id == args.tenant_id,
+        ReviewQueueEntry.status == "pending",
     )
+    if application_uuid is not None:
+        existing_query = existing_query.where(
+            ReviewQueueEntry.application_id == application_uuid
+        )
+    else:
+        existing_query = existing_query.where(
+            ReviewQueueEntry.job_id == job_uuid,
+            ReviewQueueEntry.job_snapshot_id == snap_uuid,
+        )
+    existing = session.execute(existing_query).scalars().first()
+    if existing is None and application_uuid is not None:
+        # Migration compatibility: attach a pre-0.19.1 pending row that was
+        # keyed only by posting/snapshot instead of inserting a duplicate that
+        # would violate the pending-per-snapshot index.
+        existing = (
+            session.execute(
+                select(ReviewQueueEntry).where(
+                    ReviewQueueEntry.tenant_id == args.tenant_id,
+                    ReviewQueueEntry.job_id == job_uuid,
+                    ReviewQueueEntry.job_snapshot_id == snap_uuid,
+                    ReviewQueueEntry.status == "pending",
+                )
+            )
+            .scalars()
+            .first()
+        )
     if existing is not None:
+        if application_uuid is not None and existing.application_id is None:
+            existing.application_id = application_uuid
         logger.info(
-            "review_queue: reusing existing pending entry id=%s for job_id=%s",
+            "review_queue: reusing existing pending entry id=%s for application_id=%s",
             existing.id,
-            job_uuid,
+            application_uuid,
         )
         return existing
 
     entry = ReviewQueueEntry(
         tenant_id=args.tenant_id,
+        application_id=application_uuid,
         job_id=job_uuid,
         job_snapshot_id=snap_uuid,
         run_id=args.run_id,

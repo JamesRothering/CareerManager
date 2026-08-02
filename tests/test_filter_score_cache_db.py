@@ -122,7 +122,7 @@ def test_record_score_handles_duplicate_then_continues_batch(db_session: Session
         )
 
     # Both rows present; snap_a still has the original 0.7 because
-    # on-conflict is DO NOTHING (we don't want to silently overwrite
+    # on-conflict only refreshes computed_at (we don't silently overwrite
     # an audit-relevant earlier verdict).
     hit_a = score_cache.get_cached_score(
         db_session,
@@ -171,7 +171,7 @@ def test_record_score_returns_existing_row_on_conflict(db_session: Session) -> N
         )
 
     assert first.id == second.id
-    assert second.final_score == 0.3  # original wins under DO NOTHING
+    assert second.final_score == 0.3  # original verdict wins; timestamp is refreshed
 
 
 def test_record_score_different_profile_version_inserts_new_row(db_session: Session) -> None:

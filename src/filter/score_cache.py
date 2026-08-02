@@ -27,9 +27,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -38,9 +37,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from src.core.models import JobPostingScore
-
-logger = logging.getLogger("autoapply.filter.score_cache")
-
 
 # Bump whenever the deterministic scorer's hard rules, weight defaults,
 # or quality-multiplier logic change. The string makes "v1" / "v2"
@@ -88,6 +84,8 @@ def get_cached_score(
     profile_id: str,
     profile_version: str,
     scorer_version: str = SCORER_VERSION,
+    max_age_hours: int | None = None,
+    now: datetime | None = None,
 ) -> CachedVerdict | None:
     """Return the cached verdict for the exact ``(tenant, snapshot,
     profile, profile_version, scorer_version)`` combination.
@@ -105,6 +103,9 @@ def get_cached_score(
         .where(JobPostingScore.profile_version == profile_version)
         .where(JobPostingScore.scorer_version == scorer_version)
     )
+    if max_age_hours is not None:
+        cutoff = (now or datetime.now(UTC)) - timedelta(hours=max(max_age_hours, 1))
+        stmt = stmt.where(JobPostingScore.computed_at >= cutoff)
     row = session.execute(stmt).scalar_one_or_none()
     if row is None:
         return None
@@ -135,13 +136,10 @@ def record_score(
 ) -> JobPostingScore:
     """Insert one cache row. Idempotent under the unique key.
 
-    Uses Postgres ``INSERT ... ON CONFLICT DO NOTHING`` so a duplicate
-    key under a concurrent writer is a no-op rather than an
-    :class:`IntegrityError` — the earlier implementation rolled the
-    outer transaction back on the conflict, which closed the
-    ``session.begin()`` opened by :func:`plan_run._persist_score_cache`
-    and made every subsequent insert in the same batch fail. The
-    on-conflict path now returns the pre-existing row instead.
+    Uses Postgres ``INSERT ... ON CONFLICT DO UPDATE`` so a duplicate
+    key refreshes only ``computed_at`` without overwriting its audit-relevant
+    verdict. This lets an expired acceleration row become reusable after a
+    slow-path recompute while keeping concurrent writes transaction-safe.
 
     ``breakdown`` is anything with a ``to_dict()`` method (the matching
     scorer's :class:`ScoreBreakdown`) or a plain mapping. ``verdict`` is
@@ -161,9 +159,7 @@ def record_score(
     disqualified = bool(breakdown_dict.get("disqualified"))
     verdict = "reject" if disqualified else "surface"
     final_score_raw = breakdown_dict.get("final_score")
-    final_score = (
-        float(final_score_raw) if isinstance(final_score_raw, (int, float)) else None
-    )
+    final_score = float(final_score_raw) if isinstance(final_score_raw, (int, float)) else None
 
     insert_stmt = (
         pg_insert(JobPostingScore.__table__)
@@ -181,36 +177,16 @@ def record_score(
             score_breakdown=breakdown_dict,
             computed_at=timestamp,
         )
-        .on_conflict_do_nothing(
+        .on_conflict_do_update(
             constraint="uq_job_posting_scores_cache_key",
+            set_={"computed_at": timestamp},
         )
         .returning(JobPostingScore.__table__.c.id)
     )
     result = session.execute(insert_stmt)
-    inserted_id = result.scalar_one_or_none()
-    if inserted_id is not None:
-        session.flush()
-        return session.get(JobPostingScore, inserted_id)
-
-    # On-conflict: row already exists with the same cache key. Return
-    # it so the caller still gets a JobPostingScore handle.
-    existing = (
-        session.execute(
-            select(JobPostingScore)
-            .where(JobPostingScore.tenant_id == tenant_id)
-            .where(JobPostingScore.snapshot_id == snapshot_id)
-            .where(JobPostingScore.profile_id == profile_id)
-            .where(JobPostingScore.profile_version == profile_version)
-            .where(JobPostingScore.scorer_version == scorer_version)
-        )
-        .scalar_one()
-    )
-    logger.debug(
-        "score_cache: idempotent hit on insert for snapshot=%s profile=%s",
-        snapshot_id,
-        profile_id,
-    )
-    return existing
+    row_id = result.scalar_one()
+    session.flush()
+    return session.get(JobPostingScore, row_id)
 
 
 __all__ = [

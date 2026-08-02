@@ -10,10 +10,7 @@ import io
 import logging
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-from src.core.models import Application, Job
 
 logger = logging.getLogger("autoapply.tracker.export")
 
@@ -32,12 +29,9 @@ def export_applications_csv(
     Returns:
         CSV content as string.
     """
-    stmt = (
-        select(Application, Job)
-        .join(Job, Application.job_id == Job.id)
-        .order_by(Application.created_at.desc())
-    )
-    rows = session.execute(stmt).all()
+    from src.tracker.database import get_applications_with_jobs
+
+    rows = get_applications_with_jobs(session, limit=None)
 
     output = io.StringIO()
     writer = csv.writer(output)
