@@ -36,16 +36,18 @@ README deviation: quick start assumes `uv` on PATH, writable Docker, and Playwri
 
 **Without Postgres (sandbox, Docker down):** 1621 passed, 128 failed, 112 errors, 1 skipped, 346s. Sample: `sqlalchemy.exc.OperationalError` to `localhost:5432`.
 
-**With Postgres + Redis (2026-08-17, after Compose):** **5 failed, 1744 passed, 1 skipped, 8 warnings, 151s.** Tests were not changed to force green.
+**With Postgres + Redis (2026-08-17, after Compose):** **5 failed, 1744 passed, 1 skipped, 8 warnings, 151s.**
 
-The 5 failures:
+The 5 failures were inherited packaging/path issues, not product-logic bugs:
 
 | Test | Cause |
 |---|---|
-| `test_cli_runs_form_filler_suite` | Looks for Windows `.venv/Scripts/python.exe` on this Mac |
-| Four materials/generation tests | `template.docx` missing under `data/templates/…` — `*.docx` is gitignored; exception is only `templates/*.docx`, not `data/templates/**` |
+| `test_cli_runs_form_filler_suite` | Hardcoded Windows `.venv/Scripts/python.exe` |
+| Four materials/generation tests | `template.docx` missing under `data/templates/…` — `*.docx` is gitignored; exception was only `templates/*.docx` |
 
-README baseline after Phase 18 was `1720 passed, 1 skipped`. Live-DB run is in the same neighborhood plus those 5 inherited packaging/path issues.
+**After TE-0.11 packaging fix (same evening):** **1749 passed, 1 skipped, 8 warnings, 668s.** Form-filler CLI test uses `sys.executable`; default `template.docx` files are generated from `_create_default_*` and tracked via `!data/templates/**/*.docx`.
+
+README baseline after Phase 18 was `1720 passed, 1 skipped`.
 
 ## TE-0.6 Frontend
 
@@ -81,6 +83,6 @@ Tension: D001 said "don't fork"; D031 records that we forked AutoApply (the self
 
 ## Next overnight steps
 
-1. TE-0.4–TE-0.6 recorded. Five inherited test failures remain (missing `template.docx` + Windows venv path).
+1. The five inherited CI failures were fixed on `docs/agile-backlog` (track `data/templates/**/*.docx`; generate default `template.docx` via `_create_default_*`; form-filler CLI test uses `sys.executable` instead of Windows `.venv/Scripts/python.exe`). Local re-run of those five: passed.
 2. CI is on PR https://github.com/JamesRothering/CareerManager/pull/1 — do not merge until James reviews.
 3. Do not start product epics 1–7 until James marks TE-0 green.
