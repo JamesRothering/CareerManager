@@ -3,38 +3,25 @@
 Overnight agents pick only GitHub issues labeled **`ready`**. Do not merge PRs.
 James reviews PRs and is the only person who marks a story green.
 
-**Board:** [Issues](https://github.com/JamesRothering/CareerManager/issues) with labels `ready` / `in-review` / `backlog` / `blocked`. Milestones: [TE-0 Stand-up](https://github.com/JamesRothering/CareerManager/milestone/1), [Product backlog](https://github.com/JamesRothering/CareerManager/milestone/2).
+**Board:** [Issues](https://github.com/JamesRothering/CareerManager/issues) with labels `ready` / `in-review` / `backlog` / `blocked`. Milestones: [TE-0 Stand-up](https://github.com/JamesRothering/CareerManager/milestone/1) (done), [Product backlog](https://github.com/JamesRothering/CareerManager/milestone/2).
 
 **Judge:** Given/When/Then on the story, shown red then green, full suite still green, PR open.
 
 **Default branch:** `master`.
 
-## Ready — Enabler epic TE-0: Stand up the inherited AutoApply fork
+## Done — Enabler epic TE-0
 
-This is the technical/enabler epic: **make the forked product actually run on this machine**, then record what already exists so CareerManager is built on a living system, not a dead checkout. No new career-management product features until James marks TE-0 green.
+Stood up the inherited AutoApply fork. Merged in [PR #1](https://github.com/JamesRothering/CareerManager/pull/1). Issues #3–#14 closed.
 
-Handoff: [docs/handoffs/fork-audit.md](handoffs/fork-audit.md).
+Handoff: [docs/handoffs/fork-audit.md](handoffs/fork-audit.md). Report: [docs/handoffs/te-0-standup.md](handoffs/te-0-standup.md).
 
-What already exists (must be brought up, not rewritten): job discovery, fit scoring, applicant memory / story bank, materials workspace, document library, automation plans, human-gated review/submit, tracking, Vue+FastAPI console, Postgres+pgvector, Redis/Celery.
+Already in the product (extend, do not rebuild): job discovery / Job Index ingest, fit scoring, applicant memory / story bank / work_experiences / bullet pool, materials workspace, document library, automation plans, human-gated review, tracking, Vue+FastAPI console, Postgres+pgvector, Redis/Celery.
 
-| ID | Issue | Story | Size | Status |
-|---|---|---|---|---|
-| TE-0.1 | [#3](https://github.com/JamesRothering/CareerManager/issues/3) | Tooling check: Python 3.12+, uv, Docker, Node. Report gaps. | S | in-review (PR #1) |
-| TE-0.2 | [#4](https://github.com/JamesRothering/CareerManager/issues/4) | `uv sync`, Playwright Chromium, `.env` with `AUTOAPPLY_DB_PASSWORD` | M | in-review (PR #1) |
-| TE-0.3 | [#5](https://github.com/JamesRothering/CareerManager/issues/5) | `uv run autoapply init` then `uv run autoapply start --check` | M | in-review (PR #1) |
-| TE-0.4 | [#6](https://github.com/JamesRothering/CareerManager/issues/6) | Full local stack: Postgres + Redis + migrations + web console | L | in-review (PR #1) |
-| TE-0.5 | [#7](https://github.com/JamesRothering/CareerManager/issues/7) | Full test suite baseline — report only; do not change tests/source to force a pass | M | in-review (PR #1) |
-| TE-0.6 | [#8](https://github.com/JamesRothering/CareerManager/issues/8) | `frontend` `npm run build` if needed; note SPA already shipped under `src/web/static/spa` | S | in-review (PR #1) |
-| TE-0.7 | [#9](https://github.com/JamesRothering/CareerManager/issues/9) | Capability inventory: what works vs explicit `not_implemented` vs CareerManager gaps | M | in-review (PR #1) |
-| TE-0.8 | [#10](https://github.com/JamesRothering/CareerManager/issues/10) | Branch audit (`master`, `dev`); recommend cherry-pick / leave / delete; do not merge | S | in-review (PR #1) |
-| TE-0.9 | [#11](https://github.com/JamesRothering/CareerManager/issues/11) | Review `docs/DECISIONS.md`; flag contradictions | M | in-review (PR #1) |
-| TE-0.10 | [#12](https://github.com/JamesRothering/CareerManager/issues/12) | Add fork decision **D031** (do not renumber existing entries) | S | in-review (PR #1) |
-| TE-0.11 | [#13](https://github.com/JamesRothering/CareerManager/issues/13) | GitHub Actions CI on `master` + PRs: uv, Postgres, Redis, full suite | M | in-review (PR #1; CI red) |
-| TE-0.12 | [#14](https://github.com/JamesRothering/CareerManager/issues/14) | Make CI green: inherited packaging failures (`template.docx` gitignore + Windows venv path) | M | **Ready** |
+## Backlog — not Ready unless labeled `ready`
 
-## Backlog — not Ready
+### Epic 1 — Experience corpus (extend story bank / work_experiences / bullet pool; no parallel DB)
 
-### Epic 1 — Experience corpus (extend story bank / bullet pool; no parallel DB)
+Open product question on **US-1.1** before overnight implements it: is a CareerManager “experience” a `work_experiences` row (company vs client, dates, bullets) plus optional STAR in `story_bank`, or a new object? See issue [#15](https://github.com/JamesRothering/CareerManager/issues/15).
 
 - **US-1.1** [#15](https://github.com/JamesRothering/CareerManager/issues/15) Record an experience (client, role, dates, problem, actions, outcomes, skills). M. Missing client/dates rejected.
 - **US-1.2** [#16](https://github.com/JamesRothering/CareerManager/issues/16) Tag skills and domains. S.
@@ -43,7 +30,8 @@ What already exists (must be brought up, not rewritten): job discovery, fit scor
 
 ### Epic 2 — Job matching (build on Job Index / fit scoring)
 
-- **US-2.1** [#19](https://github.com/JamesRothering/CareerManager/issues/19) Ingest a job posting. M.
+Job ingest is **already shipped** in the fork (search, ATS, LinkedIn jobs, manual apply-target). Former US-2.1 closed as duplicate of that capability ([#19](https://github.com/JamesRothering/CareerManager/issues/19)).
+
 - **US-2.2** [#20](https://github.com/JamesRothering/CareerManager/issues/20) Rank experiences against a job. L.
 - **US-2.3** [#21](https://github.com/JamesRothering/CareerManager/issues/21) Explain match with tags + evidence spans. M.
 - **US-2.4** [#22](https://github.com/JamesRothering/CareerManager/issues/22) Pursue / Skip / Later. S.
@@ -65,7 +53,9 @@ What already exists (must be brought up, not rewritten): job discovery, fit scor
 - **US-5.1** [#29](https://github.com/JamesRothering/CareerManager/issues/29) Highlight for a target job; no invented metrics. L.
 - **US-5.2** [#30](https://github.com/JamesRothering/CareerManager/issues/30) Engagement close-out pack. M.
 
-### Epic 6 — LinkedIn (blocked until James pastes the design)
+### Epic 6 — LinkedIn (still blocked)
+
+The file `cursor-handoff-autoapply-setup.md` is the **TE-0 fork-audit** brief (copied to `docs/handoffs/fork-audit.md`). It does **not** specify LinkedIn profile fields, mapping, or a no-auto-post draft UX. Epic 6 stays blocked until James pastes that design.
 
 - **US-6.1** [#31](https://github.com/JamesRothering/CareerManager/issues/31) Map profile fields to corpus. M.
 - **US-6.2** [#32](https://github.com/JamesRothering/CareerManager/issues/32) Diff profile vs corpus. L.
