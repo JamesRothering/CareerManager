@@ -1,0 +1,25 @@
+identity:
+  full_name: "CI Fixture"
+  email: "ci@example.test"
+  phone: ""
+  location: "CI"
+  linkedin_url: ""
+  github_url: ""
+  portfolio_url: ""
+  citizenship: ""
+  work_authorization: ""
+  willing_to_relocate: false
+  visa_sponsorship_needed: false
+education: []
+work_experiences: []
+projects: []
+skills:
+  languages: []
+  frameworks: []
+  databases: []
+  tools: []
+  domains: []
+  soft_skills: []
+  certifications: []
+story_bank: []
+qa_bank: []
