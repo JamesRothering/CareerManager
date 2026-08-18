@@ -81,8 +81,9 @@ Tension: D001 said "don't fork"; D031 records that we forked AutoApply (the self
 
 `.github/workflows/ci.yml` added for `master` PRs/pushes: uv, Postgres+pgvector, Redis, pytest. `autoapply init` must be non-interactive in CI (`--skip-llm` + fixture profile). `alembic.ini` was gitignored; a secret-free file is committed so CI can migrate.
 
+**GitHub Actions (2026-08-17, run 32099519644):** **pass** in 1m1s after the template/path fix. PR https://github.com/JamesRothering/CareerManager/pull/1 — do not merge until James reviews.
+
 ## Next overnight steps
 
-1. The five inherited CI failures were fixed on `docs/agile-backlog` (track `data/templates/**/*.docx`; generate default `template.docx` via `_create_default_*`; form-filler CLI test uses `sys.executable` instead of Windows `.venv/Scripts/python.exe`). Local re-run of those five: passed.
-2. CI is on PR https://github.com/JamesRothering/CareerManager/pull/1 — do not merge until James reviews.
-3. Do not start product epics 1–7 until James marks TE-0 green.
+1. TE-0 implementation is on PR #1 with green CI. Stories stay Ready until James marks them green.
+2. Do not start product epics 1–7 until James marks TE-0 green.
