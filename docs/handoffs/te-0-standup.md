@@ -30,24 +30,22 @@ README deviation: quick start assumes `uv` on PATH, writable Docker, and Playwri
 
 ## TE-0.4 Full stack
 
-**Not started.** Docker socket is blocked, so Postgres/Redis/migrations/web cannot come up in this sandbox. Need Docker outside the sandbox, or James marks this story still Ready until a non-sandbox run.
+**Up.** Docker Desktop started; `autoapply-postgres` and `autoapply-redis` healthy on `127.0.0.1:5432` / `6379`. Alembic upgraded through `c3a7e1f2b048`. `autoapply init --skip-llm --profile tests/fixtures/ci-profile.yaml` passed (DB + pgvector + profile ingest).
 
 ## TE-0.5 Test suite
 
-Ran 2026-08-17, ~6 minutes, **no Postgres/Redis** (Docker blocked). Tests were not modified.
+**Without Postgres (sandbox, Docker down):** 1621 passed, 128 failed, 112 errors, 1 skipped, 346s. Sample: `sqlalchemy.exc.OperationalError` to `localhost:5432`.
 
-| | Count |
+**With Postgres + Redis (2026-08-17, after Compose):** **5 failed, 1744 passed, 1 skipped, 8 warnings, 151s.** Tests were not changed to force green.
+
+The 5 failures:
+
+| Test | Cause |
 |---|---|
-| Passed | 1621 |
-| Failed | 128 |
-| Errors | 112 |
-| Skipped | 1 |
-| Warnings | 5 |
-| Runtime | 346.54s |
+| `test_cli_runs_form_filler_suite` | Looks for Windows `.venv/Scripts/python.exe` on this Mac |
+| Four materials/generation tests | `template.docx` missing under `data/templates/…` — `*.docx` is gitignored; exception is only `templates/*.docx`, not `data/templates/**` |
 
-README baseline after Phase 18 was `1720 passed, 1 skipped`. Sample error: `sqlalchemy.exc.OperationalError: connection failed: connection to server at "localhost" (::1), port 5432 failed`. The 240 fail/error rows match DB-backed tests with Postgres down. Pipeline `exit 0` was from `tee | tail`, not pytest.
-
-Do not treat this as a product regression until the same suite is re-run with Compose up.
+README baseline after Phase 18 was `1720 passed, 1 skipped`. Live-DB run is in the same neighborhood plus those 5 inherited packaging/path issues.
 
 ## TE-0.6 Frontend
 
@@ -83,7 +81,6 @@ Tension: D001 said "don't fork"; D031 records that we forked AutoApply (the self
 
 ## Next overnight steps
 
-1. TE-0.5 and TE-0.6 are recorded. TE-0.4 (live Postgres/Redis/web) still needs Docker outside this sandbox.
-2. CI workflow is on `docs/agile-backlog`; GitHub Actions will not run until a PR exists against `master`.
+1. TE-0.4–TE-0.6 recorded. Five inherited test failures remain (missing `template.docx` + Windows venv path).
+2. CI is on PR https://github.com/JamesRothering/CareerManager/pull/1 — do not merge until James reviews.
 3. Do not start product epics 1–7 until James marks TE-0 green.
-4. If this session dies, retry on the progressive timer in `docs/NIGHTLY.md`. Do not spin on Docker/Playwright in-sandbox.
