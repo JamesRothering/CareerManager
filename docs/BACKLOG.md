@@ -7,19 +7,27 @@ James reviews PRs and is the only person who marks a story green.
 
 **Default branch:** `master`.
 
-## Ready — Sprint 0 (fork audit)
+## Ready — Enabler epic TE-0: Stand up the inherited AutoApply fork
 
-No product features until James marks Sprint 0 green.
+This is the technical/enabler epic: **make the forked product actually run on this machine**, then record what already exists so CareerManager is built on a living system, not a dead checkout. No new career-management product features until James marks TE-0 green.
+
 Handoff: [docs/handoffs/fork-audit.md](handoffs/fork-audit.md).
+
+What already exists (must be brought up, not rewritten): job discovery, fit scoring, applicant memory / story bank, materials workspace, document library, automation plans, human-gated review/submit, tracking, Vue+FastAPI console, Postgres+pgvector, Redis/Celery.
 
 | ID | Story | Size |
 |---|---|---|
-| S0.1 | Environment setup and verification (README quick start; report deviations) | M |
-| S0.2 | Full test suite run — report only; do not change tests/source to force a pass | M |
-| S0.3 | Branch audit (`master`, `dev`); recommend cherry-pick / leave / delete; do not merge | S |
-| S0.4 | Review `docs/DECISIONS.md`; flag contradictions | M |
-| S0.5 | Add fork decision **D031** (do not renumber existing entries) | S |
-| S0.6 | GitHub Actions CI on `master` + PRs: uv, Postgres, Redis, full suite | M |
+| TE-0.1 | Tooling check: Python 3.12+, uv, Docker, Node. Report gaps. | S |
+| TE-0.2 | `uv sync`, Playwright Chromium, `.env` with `AUTOAPPLY_DB_PASSWORD` | M |
+| TE-0.3 | `uv run autoapply init` then `uv run autoapply start --check` | M |
+| TE-0.4 | Full local stack: Postgres + Redis + migrations + web console | L |
+| TE-0.5 | Full test suite baseline — report only; do not change tests/source to force a pass | M |
+| TE-0.6 | `frontend` `npm run build` if needed; note SPA already shipped under `src/web/static/spa` | S |
+| TE-0.7 | Capability inventory: what works vs explicit `not_implemented` vs CareerManager gaps | M |
+| TE-0.8 | Branch audit (`master`, `dev`); recommend cherry-pick / leave / delete; do not merge | S |
+| TE-0.9 | Review `docs/DECISIONS.md`; flag contradictions | M |
+| TE-0.10 | Add fork decision **D031** (do not renumber existing entries) | S |
+| TE-0.11 | GitHub Actions CI on `master` + PRs: uv, Postgres, Redis, full suite | M |
 
 ## Backlog — not Ready
 
