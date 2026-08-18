@@ -1,16 +1,19 @@
 """SQLAlchemy ORM models for all database tables.
 
-Covers: jobs, applications, applicant_profile, bullet_pool, qa_bank.
+Covers: jobs, applications, applicant_profile, bullet_pool, qa_bank,
+linkedin_network.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -632,3 +635,51 @@ class CleanupItem(Base):
     quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class LinkedInNetwork(Base):
+    """Official LinkedIn data-export row: a connection or a follower.
+
+    Idempotent upsert key is ``(tenant_id, kind, identity_key)`` where
+    ``identity_key`` is the member profile URL, or email if URL is missing.
+    """
+
+    __tablename__ = "linkedin_network"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "kind",
+            "identity_key",
+            name="uq_linkedin_network_tenant_kind_identity",
+        ),
+        CheckConstraint(
+            "kind IN ('connection', 'follower')",
+            name="ck_linkedin_network_kind",
+        ),
+        CheckConstraint(
+            "("
+            "(profile_url IS NOT NULL AND btrim(profile_url) <> '')"
+            " OR (email IS NOT NULL AND btrim(email) <> '')"
+            ")",
+            name="ck_linkedin_network_url_or_email",
+        ),
+        Index("ix_linkedin_network_tenant_kind", "tenant_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    identity_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    profile_url: Mapped[str | None] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(String(320))
+    first_name: Mapped[str | None] = mapped_column(String(200))
+    last_name: Mapped[str | None] = mapped_column(String(200))
+    company: Mapped[str | None] = mapped_column(String(200))
+    position: Mapped[str | None] = mapped_column(String(300))
+    headline: Mapped[str | None] = mapped_column(String(400))
+    connected_on: Mapped[date | None] = mapped_column(Date)
+    raw: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
