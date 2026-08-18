@@ -21,9 +21,9 @@ Already in the product (extend, do not rebuild): job discovery / Job Index inges
 
 ### Epic 1 — Experience corpus (extend story bank / work_experiences / bullet pool; no parallel DB)
 
-Open product question on **US-1.1** before overnight implements it: is a CareerManager “experience” a `work_experiences` row (company vs client, dates, bullets) plus optional STAR in `story_bank`, or a new object? See issue [#15](https://github.com/JamesRothering/CareerManager/issues/15).
+STAR (`story_bank`) stays — interview anecdotes. Client vs vendor on `work_experiences` is not a design issue; treat `company` as the employer name.
 
-- **US-1.1** [#15](https://github.com/JamesRothering/CareerManager/issues/15) Record an experience (client, role, dates, problem, actions, outcomes, skills). M. Missing client/dates rejected.
+- **US-1.1** [#15](https://github.com/JamesRothering/CareerManager/issues/15) Record an experience (role, dates, problem, actions, outcomes, skills). M. Missing dates rejected.
 - **US-1.2** [#16](https://github.com/JamesRothering/CareerManager/issues/16) Tag skills and domains. S.
 - **US-1.3** [#17](https://github.com/JamesRothering/CareerManager/issues/17) List/retrieve newest-first. S.
 - **US-1.4** [#18](https://github.com/JamesRothering/CareerManager/issues/18) Idempotent import from Codojo about/work/stories (TransUnion, Hulu, McDonald's, BNP Paribas, Codojo Inc.). M.
@@ -41,6 +41,9 @@ Job ingest is **already shipped** in the fork (search, ATS, LinkedIn jobs, manua
 - **US-3.1** [#23](https://github.com/JamesRothering/CareerManager/issues/23) Log a communication against a job. M.
 - **US-3.2** [#24](https://github.com/JamesRothering/CareerManager/issues/24) Pipeline stages with valid transitions. M.
 - **US-3.3** [#25](https://github.com/JamesRothering/CareerManager/issues/25) Overdue follow-ups in America/Los_Angeles. S.
+- **US-3.4** [#38](https://github.com/JamesRothering/CareerManager/issues/38) Right to Represent (recruiter, exclusive or not, which roles). M.
+- **US-3.5** [#39](https://github.com/JamesRothering/CareerManager/issues/39) Email discussion trail on that recruiter/RTR. M.
+- **US-3.6** [#40](https://github.com/JamesRothering/CareerManager/issues/40) Submission rate: how often they submitted me, to whom, outcome. M.
 
 ### Epic 4 — Accomplishments and status reports
 
@@ -64,6 +67,24 @@ The file `cursor-handoff-autoapply-setup.md` is the **TE-0 fork-audit** brief (c
 ### Epic 7 — Lifecycle
 
 - **US-7.1** [#34](https://github.com/JamesRothering/CareerManager/issues/34) Search vs on-contract mode. S.
+
+### TE-1 — LinkedIn official export into Postgres (no scrape)
+
+Extend the existing database. Input is LinkedIn **Get a copy of your data** CSVs (Connections + Followers), not Playwright.
+
+- **TE-1.1** Schema: connections and followers tables (idempotent key: LinkedIn member URL or email). M.
+- **TE-1.2** Import the two CSVs; merge, don’t duplicate. M.
+
+### Epic 8 — Network hygiene (depends on TE-1)
+
+- **US-8.1** Rank connections/followers for prune-vs-keep with a written reason. L. Standard Connections.csv has no interaction counts — Messages export or weak proxies.
+
+### Epic 10 — Interview demand and SRS (JD text already on `job_snapshots`)
+
+- **US-10.1** From JDs of submitted applications, extract topics and a demand score 0–10 (10 = hottest across that set). L.
+- **US-10.2** SRS quiz on those topics. L.
+- **US-10.3** Topic list: display order, user can change priority. M.
+- **US-10.4** Mock interview from the same topic bank. L.
 
 ## Working agreements
 
