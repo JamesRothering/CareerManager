@@ -9,6 +9,7 @@ build/
 .eggs/
 venv/
 .venv/
+.aa-env/
 env/
 
 # Environment & Secrets
@@ -35,6 +36,7 @@ temp/
 *.pdf
 *.docx
 !templates/*.docx
+!data/templates/**/*.docx
 *.csv
 
 # Data
@@ -61,8 +63,9 @@ config/material_defaults.yaml
 data/profile/active_profile.txt
 data/profile/profiles/*.yaml
 
-# Alembic (may contain DB credentials)
-alembic.ini
+# Local bootstrap tools (not part of the product)
+.tools/
+uv-x86_64-apple-darwin.tar.gz
 
 # UV
 .python-version

@@ -456,3 +456,25 @@ This log captures key decisions, their rationale, and alternatives considered. E
 - Tests cover blocked localhost/private/metadata URLs, redirect revalidation, response-size/timeout failures, and Playwright domain lock violations.
 - Connector fixtures cover ATS detection, `fetch_jobs`, RawJob normalization, dedupe key, source health, and partial failure without live websites.
 - Template tests assert LLM output validates against the DSL, preview is required before activation, and dangerous steps are rejected.
+
+---
+
+## D031 — Fork AutoApply as CareerManager trunk (2026-08-17)
+
+**Decision**: Use a personal fork of archived `Liam-Frost/AutoApply` (`JamesRothering/CareerManager`) as the trunk for this career-management system. Do not start from an AIHawk-derived codebase. Continue this decision log from D031 onward without renumbering upstream entries.
+
+**Rationale**:
+
+1. **Upstream is archived.** AutoApply is no longer moving; a fork is the only way to keep a living tree.
+2. **D001 still holds for AIHawk.** AutoApply itself was built as a modular trunk rather than a fork of AIHawk / get_jobs / GodsScion. Forking AutoApply inherits that architecture instead of inheriting those coupling problems.
+3. **CareerManager is an extension, not a rewrite.** Job index, fit scoring, story bank / bullet pool, materials, human-gated submit, and the Vue/FastAPI console already exist. New work (experience corpus, communications, accomplishments, status reports, LinkedIn alignment) should extend those models.
+4. **License.** PolyForm Noncommercial 1.0.0 — personal / non-commercial use.
+
+**What this does not change**: immutable Alembic migrations, human-gated submission, block-based resume assembly (D005), PostgreSQL + pgvector (D004), uv (D007), no LangChain (D017).
+
+**Default branch**: this fork uses `master`. `dev` is ahead with Phase 19 work and must not be merged until reviewed.
+
+**Enforcement**:
+
+- New product features wait until enabler epic TE-0 (stand up the inherited system) is marked green by James.
+- PRs against `master`. Overnight agents do not merge.
