@@ -15,12 +15,12 @@ If a command dies, the sandbox blocks something, or this session is interrupted:
 - First retry: **3 minutes**
 - Each later retry: double the previous delay (**6m, 12m, 24m**)
 - Cap: **30 minutes**
-- On each wake, continue the same Ready work from `docs/BACKLOG.md`
+- On each wake, continue the same Ready GitHub issue
 - Stop retrying only at 06:30, when usage is limited, or when no Ready stories remain
 
 ## Each story
 
-1. Read `docs/BACKLOG.md`. Pick the first Ready story.
+1. List GitHub issues labeled `ready` on JamesRothering/CareerManager. Pick the lowest issue number. `docs/BACKLOG.md` is the mirror.
 2. Write tests. Prove they are red.
 3. Implement. Prove they are green. Full suite must stay green.
 4. Open one PR. Do not merge. Do not approve.
