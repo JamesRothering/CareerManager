@@ -34,7 +34,20 @@ README deviation: quick start assumes `uv` on PATH, writable Docker, and Playwri
 
 ## TE-0.5 Test suite
 
-Attempted after this report commit. Without Postgres/Redis, expect connection failures on DB-backed tests. Report raw counts; do not edit tests to force green.
+Ran 2026-08-17, ~6 minutes, **no Postgres/Redis** (Docker blocked). Tests were not modified.
+
+| | Count |
+|---|---|
+| Passed | 1621 |
+| Failed | 128 |
+| Errors | 112 |
+| Skipped | 1 |
+| Warnings | 5 |
+| Runtime | 346.54s |
+
+README baseline after Phase 18 was `1720 passed, 1 skipped`. Sample error: `sqlalchemy.exc.OperationalError: connection failed: connection to server at "localhost" (::1), port 5432 failed`. The 240 fail/error rows match DB-backed tests with Postgres down. Pipeline `exit 0` was from `tee | tail`, not pytest.
+
+Do not treat this as a product regression until the same suite is re-run with Compose up.
 
 ## TE-0.6 Frontend
 
