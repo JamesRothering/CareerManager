@@ -36,6 +36,7 @@ temp/
 *.pdf
 *.docx
 !templates/*.docx
+!data/templates/**/*.docx
 *.csv
 
 # Data

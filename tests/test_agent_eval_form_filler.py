@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from src.agent.eval.runner import list_suites, run_suite
@@ -203,7 +204,7 @@ class TestCLIIntegration:
         # the registered command rather than its internals.
         result = subprocess.run(
             [
-                str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"),
+                sys.executable,
                 "-m",
                 "src.cli.main",
                 "eval",
