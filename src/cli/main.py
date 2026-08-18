@@ -43,6 +43,7 @@ from src.cli.cmd_eval import eval_cmd  # noqa: E402
 from src.cli.cmd_init import init_cmd  # noqa: E402
 from src.cli.cmd_jobs import jobs_cmd  # noqa: E402
 from src.cli.cmd_migrate import migrate_cmd  # noqa: E402
+from src.cli.cmd_network import network_cmd  # noqa: E402
 from src.cli.cmd_plan_runs import (  # noqa: E402  (Phase 17.1 / 17.7)
     pause_plan_runs_cmd,
     plan_runs_cmd,
@@ -69,6 +70,7 @@ cli.add_command(provider_cmd, "provider")
 cli.add_command(migrate_cmd, "migrate")
 cli.add_command(redis_cmd, "redis")
 cli.add_command(jobs_cmd, "jobs")
+cli.add_command(network_cmd, "network")
 # Phase 14.7 task queue commands.
 cli.add_command(worker_cmd, "worker")
 cli.add_command(beat_cmd, "beat")
