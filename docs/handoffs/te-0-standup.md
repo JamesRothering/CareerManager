@@ -51,7 +51,7 @@ Do not treat this as a product regression until the same suite is re-run with Co
 
 ## TE-0.6 Frontend
 
-Not rebuilt. README says built SPA already ships under `src/web/static/spa`.
+`npm install` (136 packages) and `npm run build` **succeeded** in 1m 38s (plus 2m install). Vite 6.4.1; 2382 modules. Existing chunk-size warning remains (`index-Fo_1abbq.js` 580 kB). Output hashed names match the already-tracked files under `src/web/static/spa`; no SPA asset diff. One sandbox tar EPERM on `resolve/.claude/settings.local.json` during extract; install still completed.
 
 ## TE-0.7 Capability inventory (`master` = Phase 18)
 
@@ -83,7 +83,7 @@ Tension: D001 said "don't fork"; D031 records that we forked AutoApply (the self
 
 ## Next overnight steps
 
-1. Finish pytest baseline report (TE-0.5).
-2. Keep CI red-first: confirm the workflow file is in the PR.
+1. TE-0.5 and TE-0.6 are recorded. TE-0.4 (live Postgres/Redis/web) still needs Docker outside this sandbox.
+2. CI workflow is on `docs/agile-backlog`; GitHub Actions will not run until a PR exists against `master`.
 3. Do not start product epics 1–7 until James marks TE-0 green.
-4. If this session dies, retry on the progressive timer in `docs/NIGHTLY.md`.
+4. If this session dies, retry on the progressive timer in `docs/NIGHTLY.md`. Do not spin on Docker/Playwright in-sandbox.
