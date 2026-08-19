@@ -135,3 +135,4 @@ def test_network_cli_help_lists_import() -> None:
     assert result.exit_code == 0
     assert "--connections" in result.output
     assert "--followers" in result.output
+    assert "--archive" in result.output
