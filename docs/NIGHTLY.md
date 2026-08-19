@@ -28,7 +28,7 @@ If a command dies, the sandbox blocks something, or this session is interrupted:
 
 ## Enabler epic TE-0
 
-Until James marks TE-0 green, only TE-0 stories. Follow `docs/handoffs/fork-audit.md` and `docs/handoffs/te-0-standup.md`. No product features.
+TE-0 is done (PR #1 merged, issues #3–#14 closed). Product work may proceed from issues labeled `ready`. Do not rebuild Job Index ingest (US-2.1 closed). Epic 6 stays blocked until James pastes a LinkedIn **profile** design — the fork-audit handoff is not that design.
 
 ## After 06:30
 
