@@ -2,8 +2,8 @@
 """Beacon: pick LinkedIn dump zip(s) and ship them into CareerManager.
 
 Save this in Downloads. Run it from Downloads. It lists the newest
-*LinkedIn* files in the current folder, checkboxes to pick chunks, and
-ingests them. Later zips merge (add/update only).
+*LinkedIn* files in the current folder. Type Enter to ingest them.
+Later zips merge (add/update only).
 
     python3 LI_eater.py
 """
@@ -44,53 +44,19 @@ def _ensure_repo_on_path() -> Path:
     return repo
 
 
-def _python_with_tk() -> str | None:
-    """Homebrew python3 often has no Tk. macOS /usr/bin/python3 usually does."""
-    try:
-        import tkinter  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        return sys.executable
-    for python in ("/usr/bin/python3", "/usr/local/bin/python3"):
-        if python == sys.executable or not Path(python).is_file():
-            continue
-        try:
-            result = subprocess.run(
-                [python, "-c", "import tkinter"],
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-        except OSError:
-            continue
-        if result.returncode == 0:
-            return python
-    return None
-
-
-def _reexec_with_tk() -> None:
-    if os.environ.get("LI_EATER_TK_REEXEC"):
-        return
-    python = _python_with_tk()
-    if python is None or Path(python).resolve() == Path(sys.executable).resolve():
-        return
-    env = os.environ.copy()
-    env["LI_EATER_TK_REEXEC"] = "1"
-    os.execve(python, [python, str(Path(__file__).resolve()), *sys.argv[1:]], env)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Eat LinkedIn export zip(s) into CareerManager.")
-    parser.add_argument("--no-gui", action="store_true", help="No window.")
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Non-interactive: glob/source and ingest.",
+    )
     parser.add_argument("--source", action="append", type=Path, default=[], help="Zip or folder.")
     parser.add_argument("--mask", default="*LinkedIn*", help="Glob in the search directory.")
     parser.add_argument("--output", type=Path, default=None, help="Optional LI-YYYY-MM-DD.csv.")
     parser.add_argument("--ingest", action="store_true", default=True)
     parser.add_argument("--no-ingest", action="store_false", dest="ingest")
     args = parser.parse_args(argv)
-    if not args.no_gui and argv is None:
-        _reexec_with_tk()
     _ensure_repo_on_path()
     if not args.no_gui:
         return _run_beacon(
@@ -126,7 +92,7 @@ def _run_selected(picked: list[Path], *, ingest: bool, output: Path | None) -> s
     if ingest:
         notes.append(_ingest(ordered))
     elif output is None:
-        raise ValueError("Nothing to do: check Ingest or Also save CSV.")
+        raise ValueError("Nothing to do: turn on ingest or save CSV.")
     return "\n".join(notes)
 
 
@@ -138,6 +104,7 @@ def _ingest(paths: list[Path]) -> str:
     env.setdefault("UV_PROJECT_ENVIRONMENT", str(repo / ".aa-env"))
     chunks: list[str] = []
     for path in paths:
+        print(f"Ingesting {path.name} ...")
         result = subprocess.run(
             [uv_bin, "run", "autoapply", "network", "import", "--archive", str(path)],
             cwd=str(repo),
@@ -153,125 +120,120 @@ def _ingest(paths: list[Path]) -> str:
     return "\n".join(chunks)
 
 
-def _run_beacon(*, mask: str, ingest_default: bool, save_csv_default: bool) -> int:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
-    except ImportError:
-        print(
-            "No window toolkit on this Python. On a Mac use:\n"
-            "  /usr/bin/python3 LI_eater.py",
-            file=sys.stderr,
-        )
-        return 1
+def _box(on: bool) -> str:
+    return "[x]" if on else "[ ]"
 
+
+def _choose_folder_macos(initial: Path) -> Path | None:
+    quoted = str(initial).replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        f'set theFolder to choose folder with prompt "LinkedIn export folder" '
+        f'default location POSIX file "{quoted}"\n'
+        "return POSIX path of theFolder"
+    )
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    text = result.stdout.strip()
+    return Path(text) if text else None
+
+
+def _run_beacon(*, mask: str, ingest_default: bool, save_csv_default: bool) -> int:
+    """Terminal picker. Tk aborts on this Mac (needs 12.7, have 12.6)."""
     from src.memory.linkedin_eater import (
         default_output_path,
         initial_search_dir,
         list_export_candidates,
     )
 
-    root = tk.Tk()
-    root.title("LI eater")
-    try:
-        root.attributes("-topmost", True)
-    except tk.TclError:
-        pass
+    folder = initial_search_dir()
+    glob_mask = mask
+    ingest_on = ingest_default
+    save_csv = save_csv_default
+    show_all = False
+    checked: dict[Path, bool] = {}
 
-    folder = tk.StringVar(value=str(initial_search_dir()))
-    glob_mask = tk.StringVar(value=mask)
-    ingest_var = tk.BooleanVar(value=ingest_default)
-    save_csv_var = tk.BooleanVar(value=save_csv_default)
-    show_all_var = tk.BooleanVar(value=False)
-    status = tk.StringVar(value="Check the LinkedIn zip(s), then Eat.")
-    file_vars: list[tuple[Path, tk.BooleanVar]] = []
+    def rows() -> list[Path]:
+        return list_export_candidates(folder, glob_mask, include_other_zips=show_all)
 
-    ttk.Label(root, text="Folder (current directory by default)").grid(
-        row=0, column=0, sticky="w", padx=8, pady=(8, 2)
-    )
-    ttk.Entry(root, textvariable=folder, width=56).grid(row=1, column=0, padx=8, sticky="ew")
+    def sync_checked(paths: list[Path]) -> None:
+        keep = {path: checked.get(path, "linkedin" in path.name.lower()) for path in paths}
+        checked.clear()
+        checked.update(keep)
 
-    def browse() -> None:
-        picked = filedialog.askdirectory(parent=root, initialdir=folder.get() or str(Path.cwd()))
-        if picked:
-            folder.set(picked)
-            refresh()
-
-    ttk.Button(root, text="Browse…", command=browse).grid(row=1, column=1, padx=8, pady=2)
-
-    ttk.Label(root, text="Glob mask").grid(row=2, column=0, sticky="w", padx=8, pady=(8, 2))
-    ttk.Entry(root, textvariable=glob_mask, width=24).grid(row=3, column=0, padx=8, sticky="w")
-
-    list_frame = ttk.Frame(root)
-    list_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(4, weight=1)
-
-    def refresh() -> None:
-        for child in list_frame.winfo_children():
-            child.destroy()
-        file_vars.clear()
-        search = Path(folder.get() or ".")
-        rows = list_export_candidates(
-            search,
-            glob_mask.get() or "*LinkedIn*",
-            include_other_zips=show_all_var.get(),
-        )
-        if not rows:
-            ttk.Label(
-                list_frame,
-                text=f"Nothing matching {glob_mask.get()} in {search}",
-            ).pack(anchor="w")
-            return
-        for path in rows:
-            checked = "linkedin" in path.name.lower()
-            var = tk.BooleanVar(value=checked)
-            file_vars.append((path, var))
+    while True:
+        paths = rows()
+        sync_checked(paths)
+        print()
+        print("LI eater")
+        print(f"Folder: {folder}")
+        print(f"Glob:   {glob_mask}")
+        print()
+        if not paths:
+            print(f"  nothing matching {glob_mask}")
+        for index, path in enumerate(paths, start=1):
             when = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            label = f"{path.name}    {when}"
-            ttk.Checkbutton(list_frame, variable=var, text=label).pack(anchor="w")
-
-    def eat() -> None:
-        picked = [path for path, var in file_vars if var.get()]
-        if not picked:
-            messagebox.showwarning("LI eater", "Check at least one file.", parent=root)
-            return
-        dest = default_output_path(date.today()) if save_csv_var.get() else None
+            kind = "folder" if path.is_dir() else "zip"
+            print(f"  {_box(checked[path])} {index:2d}  {path.name}    {when}  ({kind})")
+        print()
+        print(f"  {_box(ingest_on)} i  Ingest into CareerManager")
+        print(f"  {_box(save_csv)} s  Also save LI-YYYY-MM-DD.csv")
+        print(f"  {_box(show_all)} z  Show other recent *.zip")
+        print()
+        print("Enter = eat  |  1 2 = toggle files  |  f = folder  |  g = glob  |  q = quit")
         try:
-            summary = _run_selected(picked, ingest=ingest_var.get(), output=dest)
-        except (FileNotFoundError, OSError, RuntimeError, ValueError) as err:
-            messagebox.showerror("LI eater", str(err), parent=root)
-            return
-        status.set(summary.splitlines()[-1] if summary else "Done")
-        messagebox.showinfo("LI eater", summary or "Done", parent=root)
-        root.destroy()
-
-    opts = ttk.Frame(root)
-    opts.grid(row=5, column=0, columnspan=2, sticky="w", padx=8)
-    ttk.Checkbutton(opts, text="Ingest into CareerManager", variable=ingest_var).pack(
-        anchor="w"
-    )
-    ttk.Checkbutton(opts, text="Also save LI-YYYY-MM-DD.csv", variable=save_csv_var).pack(
-        anchor="w"
-    )
-    ttk.Checkbutton(
-        opts,
-        text="Show other recent *.zip in this folder",
-        variable=show_all_var,
-        command=refresh,
-    ).pack(anchor="w")
-
-    btns = ttk.Frame(root)
-    btns.grid(row=6, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
-    ttk.Button(btns, text="Refresh", command=refresh).pack(side="left")
-    ttk.Button(btns, text="Eat and ingest", command=eat).pack(side="right")
-    ttk.Label(root, textvariable=status).grid(
-        row=7, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
-    )
-
-    glob_mask.trace_add("write", lambda *_: refresh())
-    refresh()
-    root.mainloop()
+            reply = input("> ").strip()
+        except EOFError:
+            return 1
+        if reply == "" or reply.lower() in {"e", "eat", "go"}:
+            picked = [path for path, on in checked.items() if on]
+            if not picked:
+                print("Check at least one file (type its number).")
+                continue
+            dest = default_output_path(date.today()) if save_csv else None
+            try:
+                summary = _run_selected(picked, ingest=ingest_on, output=dest)
+            except (FileNotFoundError, OSError, RuntimeError, ValueError) as err:
+                print(err, file=sys.stderr)
+                return 1
+            print(summary)
+            return 0
+        lower = reply.lower()
+        if lower in {"q", "quit"}:
+            return 0
+        if lower == "i":
+            ingest_on = not ingest_on
+            continue
+        if lower == "s":
+            save_csv = not save_csv
+            continue
+        if lower == "z":
+            show_all = not show_all
+            continue
+        if lower == "f":
+            picked_dir = _choose_folder_macos(folder)
+            if picked_dir is None:
+                typed = input("Folder path: ").strip()
+                picked_dir = Path(typed).expanduser() if typed else None
+            if picked_dir is not None and picked_dir.is_dir():
+                folder = picked_dir
+            continue
+        if lower == "g":
+            typed = input("Glob mask: ").strip()
+            if typed:
+                glob_mask = typed
+            continue
+        for token in reply.replace(",", " ").split():
+            if token.isdigit():
+                index = int(token) - 1
+                if 0 <= index < len(paths):
+                    path = paths[index]
+                    checked[path] = not checked[path]
     return 0
 
 
