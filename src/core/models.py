@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for all database tables.
 
 Covers: jobs, applications, applicant_profile, bullet_pool, qa_bank,
-linkedin_network.
+linkedin_export_* (full official archive), linkedin_network (projection).
 """
 
 from __future__ import annotations
@@ -683,3 +683,96 @@ class LinkedInNetwork(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class LinkedInExportRun(Base):
+    """One import of a LinkedIn Complete_LinkedInDataExport zip or folder."""
+
+    __tablename__ = "linkedin_export_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind IN ('zip', 'directory')",
+            name="ck_linkedin_export_runs_source_kind",
+        ),
+        Index("ix_linkedin_export_runs_tenant", "tenant_id"),
+        Index(
+            "ix_linkedin_export_runs_tenant_sha",
+            "tenant_id",
+            "source_sha256",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    source_name: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    extra: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class LinkedInExportFile(Base):
+    """One path inside a LinkedIn export (CSV, JSON, text, HTML, or binary)."""
+
+    __tablename__ = "linkedin_export_files"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "relative_path",
+            name="uq_linkedin_export_files_run_path",
+        ),
+        CheckConstraint(
+            "media_kind IN ('csv', 'json', 'text', 'html', 'binary', 'other')",
+            name="ck_linkedin_export_files_media_kind",
+        ),
+        Index("ix_linkedin_export_files_run", "run_id"),
+        Index("ix_linkedin_export_files_tenant_path", "tenant_id", "relative_path"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_export_runs.id", name="fk_linkedin_export_files_run", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    media_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    byte_size: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    header: Mapped[list | dict | None] = mapped_column(JSONB)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class LinkedInExportRow(Base):
+    """One parsed row (or whole-text payload) from a LinkedIn export file."""
+
+    __tablename__ = "linkedin_export_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "file_id",
+            "row_index",
+            name="uq_linkedin_export_rows_file_index",
+        ),
+        Index("ix_linkedin_export_rows_file", "file_id"),
+        Index("ix_linkedin_export_rows_run", "run_id"),
+        Index("ix_linkedin_export_rows_tenant_path", "tenant_id", "relative_path"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_export_files.id", name="fk_linkedin_export_rows_file", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_export_runs.id", name="fk_linkedin_export_rows_run", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    row_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
