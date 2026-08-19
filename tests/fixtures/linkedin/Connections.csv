@@ -1,0 +1,7 @@
+Notes:
+"When exporting your connection data, you may notice that some of the data in this file is missing. This is because it is missing from the user's profile."
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On
+Ada,Lovelace,https://www.linkedin.com/in/Ada-Lovelace/,ada@example.com,Analytical Engines,Mathematician,16 Jan 2020
+John,Doe,https://www.linkedin.com/in/john-doe,,Acme,Engineer,01 Mar 2019
+Ghost,,,,NoUrl Inc,Unknown,01 Jan 2018
