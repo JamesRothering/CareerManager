@@ -1,108 +1,237 @@
 #!/usr/bin/env python3
-"""Flatten LinkedIn's data-archive mess into one LI-<date>.csv.
+"""Beacon: pick LinkedIn dump zip(s) and ship them into CareerManager.
 
-LinkedIn zips mix CSVs, nested folders, JSON, and media. Run this, pick the
-zip(s) from Downloads (that's the default folder), and get a single file the
-CareerManager importer can merge into Postgres — including later chunks.
+Save this in Downloads. Run it from Downloads. It lists the newest
+*LinkedIn* files in the current folder, checkboxes to pick chunks, and
+ingests them. Later zips merge (add/update only).
 
-Usage:
-    python LI_eater.py
-    python LI_eater.py --no-gui --source ~/Downloads/Complete_LinkedInDataExport.zip
+    python3 LI_eater.py
 """
 
 from __future__ import annotations
 
+import argparse
+import os
+import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-import click  # noqa: E402
-
-from src.memory.linkedin_eater import (  # noqa: E402
-    default_downloads_dir,
-    default_output_path,
-    discover_linkedin_exports,
-    eat_linkedin_sources,
-    write_li_csv,
+_REPO_CANDIDATES = (
+    Path(os.environ["CAREERMANAGER_ROOT"]) if os.environ.get("CAREERMANAGER_ROOT") else None,
+    Path("/Users/macbook/Documents/CareerManager"),
+    Path.home() / "Documents" / "CareerManager",
+    Path(__file__).resolve().parent,
 )
 
 
-@click.command()
-@click.option(
-    "--no-gui",
-    is_flag=True,
-    help="Skip the file picker. Use --source, or all LinkedIn zips in Downloads.",
-)
-@click.option(
-    "--source",
-    "sources",
-    multiple=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Zip, unpacked folder, or file. Repeatable. Later sources win on the same row.",
-)
-@click.option(
-    "--output",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Defaults to ~/Downloads/LI-YYYY-MM-DD.csv (Windows: %%USERPROFILE%%\\Downloads).",
-)
-def main(no_gui: bool, sources: tuple[Path, ...], output: Path | None) -> None:
-    """Read LinkedIn export crap; write one LI-<date>.csv."""
-    picked = list(sources)
-    if not picked and not no_gui:
-        picked = _pick_with_dialog(default_downloads_dir())
-    if not picked:
-        picked = discover_linkedin_exports(default_downloads_dir())
-    if not picked:
-        raise click.UsageError(
-            f"No LinkedIn zip found. Put the export in {default_downloads_dir()} "
-            "or pass --source PATH"
+def _repo_root() -> Path:
+    for candidate in _REPO_CANDIDATES:
+        if candidate is None:
+            continue
+        marker = candidate / "src" / "memory" / "linkedin_archive.py"
+        if marker.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError(
+        "CareerManager not found. Set CAREERMANAGER_ROOT to the repo path."
+    )
+
+
+def _ensure_repo_on_path() -> Path:
+    repo = _repo_root()
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    return repo
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Eat LinkedIn export zip(s) into CareerManager.")
+    parser.add_argument("--no-gui", action="store_true", help="No window.")
+    parser.add_argument("--source", action="append", type=Path, default=[], help="Zip or folder.")
+    parser.add_argument("--mask", default="*LinkedIn*", help="Glob in the search directory.")
+    parser.add_argument("--output", type=Path, default=None, help="Optional LI-YYYY-MM-DD.csv.")
+    parser.add_argument("--ingest", action="store_true", default=True)
+    parser.add_argument("--no-ingest", action="store_false", dest="ingest")
+    args = parser.parse_args(argv)
+    _ensure_repo_on_path()
+    if not args.no_gui:
+        return _run_beacon(
+            mask=args.mask,
+            ingest_default=args.ingest,
+            save_csv_default=args.output is not None,
         )
-    records = eat_linkedin_sources(picked)
-    dest = output or default_output_path(date.today())
-    write_li_csv(dest, records)
-    click.echo(f"Wrote {len(records)} rows from {len(picked)} source(s) to {dest}")
-    click.echo("Ingest with:  uv run autoapply network import --archive " + str(dest))
+
+    from src.memory.linkedin_eater import initial_search_dir, list_export_candidates
+
+    picked = list(args.source)
+    if not picked:
+        picked = list_export_candidates(initial_search_dir(), args.mask)
+    if not picked:
+        print(f"No files matching {args.mask} in {initial_search_dir()}", file=sys.stderr)
+        return 2
+    try:
+        print(_run_selected(picked, ingest=args.ingest, output=args.output))
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as err:
+        print(err, file=sys.stderr)
+        return 1
+    return 0
 
 
-def _pick_with_dialog(initial: Path) -> list[Path]:
+def _run_selected(picked: list[Path], *, ingest: bool, output: Path | None) -> str:
+    from src.memory.linkedin_eater import eat_linkedin_sources, write_li_csv
+
+    ordered = sorted(picked, key=lambda item: item.stat().st_mtime)
+    notes: list[str] = []
+    if output is not None:
+        write_li_csv(output, eat_linkedin_sources(ordered))
+        notes.append(f"Wrote {output}")
+    if ingest:
+        notes.append(_ingest(ordered))
+    elif output is None:
+        raise ValueError("Nothing to do: check Ingest or Also save CSV.")
+    return "\n".join(notes)
+
+
+def _ingest(paths: list[Path]) -> str:
+    repo = _repo_root()
+    uv = repo / ".tools" / "uv-x86_64-apple-darwin" / "uv"
+    uv_bin = str(uv) if uv.is_file() else "uv"
+    env = os.environ.copy()
+    env.setdefault("UV_PROJECT_ENVIRONMENT", str(repo / ".aa-env"))
+    chunks: list[str] = []
+    for path in paths:
+        result = subprocess.run(
+            [uv_bin, "run", "autoapply", "network", "import", "--archive", str(path)],
+            cwd=str(repo),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        text = (result.stdout or "").strip() or (result.stderr or "").strip()
+        chunks.append(f"{path.name}: {text or result.returncode}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Ingest failed for {path}\n{result.stderr or result.stdout}")
+    return "\n".join(chunks)
+
+
+def _run_beacon(*, mask: str, ingest_default: bool, save_csv_default: bool) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog
+        from tkinter import filedialog, messagebox, ttk
     except ImportError:
-        click.echo("No file-picker available; looking in Downloads instead.", err=True)
-        return []
+        print("tkinter missing; rerun with --no-gui", file=sys.stderr)
+        return 1
+
+    from src.memory.linkedin_eater import (
+        default_output_path,
+        initial_search_dir,
+        list_export_candidates,
+    )
 
     root = tk.Tk()
-    root.withdraw()
-    root.update()
+    root.title("LI eater")
     try:
         root.attributes("-topmost", True)
     except tk.TclError:
         pass
-    start = str(initial if initial.is_dir() else Path.home())
-    files = filedialog.askopenfilenames(
-        parent=root,
-        title="Select LinkedIn export zip(s). Add the next chunk whenever it arrives.",
-        initialdir=start,
-        filetypes=[("Zip archives", "*.zip"), ("All files", "*.*")],
+
+    folder = tk.StringVar(value=str(initial_search_dir()))
+    glob_mask = tk.StringVar(value=mask)
+    ingest_var = tk.BooleanVar(value=ingest_default)
+    save_csv_var = tk.BooleanVar(value=save_csv_default)
+    show_all_var = tk.BooleanVar(value=False)
+    status = tk.StringVar(value="Check the LinkedIn zip(s), then Eat.")
+    file_vars: list[tuple[Path, tk.BooleanVar]] = []
+
+    ttk.Label(root, text="Folder (current directory by default)").grid(
+        row=0, column=0, sticky="w", padx=8, pady=(8, 2)
     )
-    picked = [Path(item) for item in files]
-    if not picked:
-        folder = filedialog.askdirectory(
-            parent=root,
-            title="Or pick an unpacked LinkedIn export folder",
-            initialdir=start,
+    ttk.Entry(root, textvariable=folder, width=56).grid(row=1, column=0, padx=8, sticky="ew")
+
+    def browse() -> None:
+        picked = filedialog.askdirectory(parent=root, initialdir=folder.get() or str(Path.cwd()))
+        if picked:
+            folder.set(picked)
+            refresh()
+
+    ttk.Button(root, text="Browse…", command=browse).grid(row=1, column=1, padx=8, pady=2)
+
+    ttk.Label(root, text="Glob mask").grid(row=2, column=0, sticky="w", padx=8, pady=(8, 2))
+    ttk.Entry(root, textvariable=glob_mask, width=24).grid(row=3, column=0, padx=8, sticky="w")
+
+    list_frame = ttk.Frame(root)
+    list_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(4, weight=1)
+
+    def refresh() -> None:
+        for child in list_frame.winfo_children():
+            child.destroy()
+        file_vars.clear()
+        search = Path(folder.get() or ".")
+        rows = list_export_candidates(
+            search,
+            glob_mask.get() or "*LinkedIn*",
+            include_other_zips=show_all_var.get(),
         )
-        if folder:
-            picked = [Path(folder)]
-    root.destroy()
-    return picked
+        if not rows:
+            ttk.Label(
+                list_frame,
+                text=f"Nothing matching {glob_mask.get()} in {search}",
+            ).pack(anchor="w")
+            return
+        for path in rows:
+            checked = "linkedin" in path.name.lower()
+            var = tk.BooleanVar(value=checked)
+            file_vars.append((path, var))
+            when = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            label = f"{path.name}    {when}"
+            ttk.Checkbutton(list_frame, variable=var, text=label).pack(anchor="w")
+
+    def eat() -> None:
+        picked = [path for path, var in file_vars if var.get()]
+        if not picked:
+            messagebox.showwarning("LI eater", "Check at least one file.", parent=root)
+            return
+        dest = default_output_path(date.today()) if save_csv_var.get() else None
+        try:
+            summary = _run_selected(picked, ingest=ingest_var.get(), output=dest)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as err:
+            messagebox.showerror("LI eater", str(err), parent=root)
+            return
+        status.set(summary.splitlines()[-1] if summary else "Done")
+        messagebox.showinfo("LI eater", summary or "Done", parent=root)
+        root.destroy()
+
+    opts = ttk.Frame(root)
+    opts.grid(row=5, column=0, columnspan=2, sticky="w", padx=8)
+    ttk.Checkbutton(opts, text="Ingest into CareerManager", variable=ingest_var).pack(
+        anchor="w"
+    )
+    ttk.Checkbutton(opts, text="Also save LI-YYYY-MM-DD.csv", variable=save_csv_var).pack(
+        anchor="w"
+    )
+    ttk.Checkbutton(
+        opts,
+        text="Show other recent *.zip in this folder",
+        variable=show_all_var,
+        command=refresh,
+    ).pack(anchor="w")
+
+    btns = ttk.Frame(root)
+    btns.grid(row=6, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+    ttk.Button(btns, text="Refresh", command=refresh).pack(side="left")
+    ttk.Button(btns, text="Eat and ingest", command=eat).pack(side="right")
+    ttk.Label(root, textvariable=status).grid(
+        row=7, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
+    )
+
+    glob_mask.trace_add("write", lambda *_: refresh())
+    refresh()
+    root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

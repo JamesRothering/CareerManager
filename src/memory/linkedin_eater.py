@@ -65,16 +65,61 @@ def default_output_path(day: date | None = None) -> Path:
 
 
 def discover_linkedin_exports(folder: Path) -> list[Path]:
-    """Zips whose names look like LinkedIn's data archive."""
+    """Zips whose names look like LinkedIn's data archive, oldest first."""
+    return list(reversed(list_export_candidates(folder, "*LinkedIn*")))
+
+
+def initial_search_dir() -> Path:
+    """Prefer the current directory (Downloads when you run it from there)."""
+    cwd = Path.cwd()
+    if list_export_candidates(cwd):
+        return cwd
+    script_dir = Path(__file__).resolve().parent
+    if list_export_candidates(script_dir):
+        return script_dir
+    downloads = default_downloads_dir()
+    if downloads.is_dir():
+        return downloads
+    return cwd
+
+
+def list_export_candidates(
+    folder: Path,
+    mask: str = "*LinkedIn*",
+    *,
+    include_other_zips: bool = False,
+    limit: int = 20,
+) -> list[Path]:
+    """Newest files/folders in ``folder`` matching a glob mask.
+
+    LinkedIn names the dumps ``Complete_LinkedInDataExport_*.zip`` and
+    ``Basic_LinkedInDataExport_*.zip``. The default mask is ``*LinkedIn*``.
+    """
+    folder = Path(folder)
     if not folder.is_dir():
         return []
-    found: list[Path] = []
-    for path in folder.iterdir():
-        name = path.name.lower()
-        if path.is_file() and path.suffix.lower() == ".zip" and "linkedin" in name:
-            found.append(path)
-    found.sort(key=lambda p: p.stat().st_mtime)
-    return found
+    found: set[Path] = set()
+    patterns = [mask]
+    if mask.lower() != mask:
+        patterns.append(mask.lower())
+    if "LinkedIn" in mask:
+        patterns.append(mask.replace("LinkedIn", "linkedin"))
+    for pattern in patterns:
+        found.update(folder.glob(pattern))
+        if not pattern.endswith(".zip"):
+            found.update(folder.glob(f"{pattern}.zip"))
+    if include_other_zips:
+        found.update(folder.glob("*.zip"))
+    candidates: list[Path] = []
+    for path in found:
+        if path.name.startswith("."):
+            continue
+        if path.is_file() and path.suffix.lower() == ".zip":
+            candidates.append(path)
+        elif path.is_dir() and any(path.glob("*.csv")):
+            candidates.append(path)
+    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    return candidates[:limit]
 
 
 def is_eaten_csv(path: Path) -> bool:
@@ -274,6 +319,18 @@ def _parse_json(data: bytes) -> list[dict]:
     return [{"_value": parsed}]
 
 
+def _identity_key(profile_url: str | None, email: str | None) -> str:
+    url = (profile_url or "").strip().rstrip("/").lower()
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://") :]
+    if url:
+        return url
+    mail = (email or "").strip().lower()
+    if mail:
+        return mail
+    raise ValueError("LinkedIn row needs a profile URL or an email")
+
+
 def make_row_key(relative_path: str, payload: dict) -> str:
     name = PurePosixPath(relative_path).name.lower()
     lookup = {
@@ -289,10 +346,8 @@ def make_row_key(relative_path: str, payload: dict) -> str:
     url = lookup.get("url") or lookup.get("profile url") or lookup.get("sender profile url")
     email = lookup.get("email address") or lookup.get("email")
     if url or email:
-        from src.memory.linkedin_network import identity_key
-
         try:
-            return _clip(identity_key(url or None, email or None))
+            return _clip(_identity_key(url or None, email or None))
         except ValueError:
             pass
     conversation = lookup.get("conversation id")
