@@ -95,17 +95,45 @@ def test_write_li_csv_roundtrip(tmp_path: Path) -> None:
     assert payload["Company"] == "Acme"
 
 
-def test_li_eater_script_no_gui(tmp_path: Path) -> None:
-    from click.testing import CliRunner
+def test_list_export_candidates_globs_newest_first(tmp_path: Path) -> None:
+    from src.memory.linkedin_eater import list_export_candidates
 
+    older = tmp_path / "Basic_LinkedInDataExport.zip"
+    newer = tmp_path / "Complete_LinkedInDataExport.zip"
+    other = tmp_path / "random.zip"
+    older.write_bytes(b"PK")
+    newer.write_bytes(b"PK")
+    other.write_bytes(b"PK")
+    os_utime = __import__("os").utime
+    os_utime(older, (1_700_000_000, 1_700_000_000))
+    os_utime(newer, (1_800_000_000, 1_800_000_000))
+    os_utime(other, (1_900_000_000, 1_900_000_000))
+    linkedin = list_export_candidates(tmp_path, "*LinkedIn*")
+    assert [p.name for p in linkedin] == [
+        "Complete_LinkedInDataExport.zip",
+        "Basic_LinkedInDataExport.zip",
+    ]
+    all_zips = list_export_candidates(tmp_path, "*LinkedIn*", include_other_zips=True)
+    assert all_zips[0].name == "random.zip"
+
+
+def test_initial_search_dir_prefers_cwd_when_it_has_matches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from src.memory.linkedin_eater import initial_search_dir
+
+    dump = tmp_path / "Complete_LinkedInDataExport.zip"
+    dump.write_bytes(b"PK")
+    monkeypatch.chdir(tmp_path)
+    assert initial_search_dir() == tmp_path
+
+
+def test_li_eater_script_no_gui(tmp_path: Path) -> None:
     from LI_eater import main
 
     zip_path = _zip_with_nested_mess(tmp_path / "Complete_LinkedInDataExport.zip")
     out = tmp_path / "LI-2026-08-18.csv"
-    result = CliRunner().invoke(
-        main,
-        ["--no-gui", "--source", str(zip_path), "--output", str(out)],
-    )
-    assert result.exit_code == 0, result.output
+    code = main(["--no-gui", "--no-ingest", "--source", str(zip_path), "--output", str(out)])
+    assert code == 0
     assert out.is_file()
     assert "Jobs/Job Applications.csv" in out.read_text(encoding="utf-8")
