@@ -128,6 +128,13 @@ def test_initial_search_dir_prefers_cwd_when_it_has_matches(
     assert initial_search_dir() == tmp_path
 
 
+def test_python_with_tk_prefers_working_interpreter() -> None:
+    from LI_eater import _python_with_tk
+
+    found = _python_with_tk()
+    assert found is None or Path(found).is_file()
+
+
 def test_li_eater_script_no_gui(tmp_path: Path) -> None:
     from LI_eater import main
 

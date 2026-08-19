@@ -44,6 +44,42 @@ def _ensure_repo_on_path() -> Path:
     return repo
 
 
+def _python_with_tk() -> str | None:
+    """Homebrew python3 often has no Tk. macOS /usr/bin/python3 usually does."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        return sys.executable
+    for python in ("/usr/bin/python3", "/usr/local/bin/python3"):
+        if python == sys.executable or not Path(python).is_file():
+            continue
+        try:
+            result = subprocess.run(
+                [python, "-c", "import tkinter"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except OSError:
+            continue
+        if result.returncode == 0:
+            return python
+    return None
+
+
+def _reexec_with_tk() -> None:
+    if os.environ.get("LI_EATER_TK_REEXEC"):
+        return
+    python = _python_with_tk()
+    if python is None or Path(python).resolve() == Path(sys.executable).resolve():
+        return
+    env = os.environ.copy()
+    env["LI_EATER_TK_REEXEC"] = "1"
+    os.execve(python, [python, str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Eat LinkedIn export zip(s) into CareerManager.")
     parser.add_argument("--no-gui", action="store_true", help="No window.")
@@ -53,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ingest", action="store_true", default=True)
     parser.add_argument("--no-ingest", action="store_false", dest="ingest")
     args = parser.parse_args(argv)
+    if not args.no_gui and argv is None:
+        _reexec_with_tk()
     _ensure_repo_on_path()
     if not args.no_gui:
         return _run_beacon(
@@ -120,7 +158,11 @@ def _run_beacon(*, mask: str, ingest_default: bool, save_csv_default: bool) -> i
         import tkinter as tk
         from tkinter import filedialog, messagebox, ttk
     except ImportError:
-        print("tkinter missing; rerun with --no-gui", file=sys.stderr)
+        print(
+            "No window toolkit on this Python. On a Mac use:\n"
+            "  /usr/bin/python3 LI_eater.py",
+            file=sys.stderr,
+        )
         return 1
 
     from src.memory.linkedin_eater import (
