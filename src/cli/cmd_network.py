@@ -68,3 +68,30 @@ def import_cmd(
                 f"Followers    inserted={report.inserted}  "
                 f"updated={report.updated}  invalid={report.invalid}"
             )
+
+
+@network_cmd.command("rank")
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="How many worst rows to print.",
+)
+def rank_cmd(limit: int) -> None:
+    """Print prune candidates, worst first, with written reasons."""
+    from src.core.config import load_config  # noqa: PLC0415
+    from src.core.database import get_session_factory  # noqa: PLC0415
+    from src.memory.linkedin_rank import rank_for_prune  # noqa: PLC0415
+
+    session_factory = get_session_factory(load_config())
+    with session_factory() as session:
+        ranked = rank_for_prune(session)
+    if not ranked:
+        click.echo("No linkedin_network rows. Import an archive first.")
+        return
+    for item in ranked[:limit]:
+        name = " ".join(p for p in (item.first_name, item.last_name) if p) or item.identity_key
+        click.echo(f"{item.prune_score:3d}  {item.kind:10s}  {name}")
+        for reason in item.reasons:
+            click.echo(f"      - {reason}")
