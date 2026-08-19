@@ -1,9 +1,8 @@
 """TE-1.1: store every file in LinkedIn's complete data archive.
 
-``linkedin_network`` stays as the typed connections/followers projection.
-The complete export (Complete_LinkedInDataExport_*.zip) also has Messages,
-Profile, Positions, Invitations, Shares, and dozens of other CSVs plus
-some JSON/TXT/HTML/media. These tables hold that whole zip.
+Chunks arrive as separate zips. Live catalog is unique per tenant and
+path; rows upsert on ``(tenant_id, relative_path, row_key)``. Missing
+files in a later chunk are not deletions.
 
 Revision ID: b4e7c9a1d2f0
 Revises: a9f1c4e2d8b0
@@ -47,7 +46,7 @@ def upgrade() -> None:
         sa.Column("row_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("extra", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.CheckConstraint(
-            "source_kind IN ('zip', 'directory')",
+            "source_kind IN ('zip', 'directory', 'csv')",
             name="ck_linkedin_export_runs_source_kind",
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -87,24 +86,19 @@ def upgrade() -> None:
             ["run_id"],
             ["linkedin_export_runs.id"],
             name="fk_linkedin_export_files_run",
-            ondelete="CASCADE",
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
-            "run_id",
+            "tenant_id",
             "relative_path",
-            name="uq_linkedin_export_files_run_path",
+            name="uq_linkedin_export_files_tenant_path",
         ),
     )
     op.create_index(
         "ix_linkedin_export_files_run",
         "linkedin_export_files",
         ["run_id"],
-    )
-    op.create_index(
-        "ix_linkedin_export_files_tenant_path",
-        "linkedin_export_files",
-        ["tenant_id", "relative_path"],
     )
 
     op.create_table(
@@ -119,8 +113,22 @@ def upgrade() -> None:
             server_default=_TENANT_DEFAULT,
         ),
         sa.Column("relative_path", sa.Text(), nullable=False),
+        sa.Column("row_key", sa.String(length=400), nullable=False),
         sa.Column("row_index", sa.Integer(), nullable=False),
+        sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.ForeignKeyConstraint(
             ["file_id"],
             ["linkedin_export_files.id"],
@@ -131,13 +139,14 @@ def upgrade() -> None:
             ["run_id"],
             ["linkedin_export_runs.id"],
             name="fk_linkedin_export_rows_run",
-            ondelete="CASCADE",
+            ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
-            "file_id",
-            "row_index",
-            name="uq_linkedin_export_rows_file_index",
+            "tenant_id",
+            "relative_path",
+            "row_key",
+            name="uq_linkedin_export_rows_tenant_path_key",
         ),
     )
     op.create_index(
@@ -162,7 +171,6 @@ def downgrade() -> None:
     op.drop_index("ix_linkedin_export_rows_run", table_name="linkedin_export_rows")
     op.drop_index("ix_linkedin_export_rows_file", table_name="linkedin_export_rows")
     op.drop_table("linkedin_export_rows")
-    op.drop_index("ix_linkedin_export_files_tenant_path", table_name="linkedin_export_files")
     op.drop_index("ix_linkedin_export_files_run", table_name="linkedin_export_files")
     op.drop_table("linkedin_export_files")
     op.drop_index("ix_linkedin_export_runs_tenant_sha", table_name="linkedin_export_runs")

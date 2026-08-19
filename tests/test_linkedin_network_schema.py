@@ -125,16 +125,18 @@ def test_linkedin_export_row_stores_json_payload() -> None:
     assert "payload" in columns
     assert "row_index" in columns
     assert "relative_path" in columns
+    assert "row_key" in columns
+    assert "content_hash" in columns
 
 
-def test_linkedin_export_file_unique_on_run_and_path() -> None:
+def test_linkedin_export_file_unique_on_tenant_and_path() -> None:
     unique = _unique_column_sets(models.LinkedInExportFile.__table__)
-    assert ("relative_path", "run_id") in unique
+    assert ("relative_path", "tenant_id") in unique
 
 
-def test_linkedin_export_row_unique_on_file_and_index() -> None:
+def test_linkedin_export_row_unique_on_tenant_path_and_key() -> None:
     unique = _unique_column_sets(models.LinkedInExportRow.__table__)
-    assert ("file_id", "row_index") in unique
+    assert ("relative_path", "row_key", "tenant_id") in unique
 
 
 def test_te_1_1_archive_migration_chains_off_network_migration() -> None:
