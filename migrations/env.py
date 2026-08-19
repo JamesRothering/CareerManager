@@ -24,6 +24,7 @@ from src.core.models import (  # noqa: F401
     Job,
     JobPosting,
     JobSnapshot,
+    LinkedInNetwork,
     QABank,
     RefreshTask,
     SearchQuery,
