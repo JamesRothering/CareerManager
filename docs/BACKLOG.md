@@ -70,14 +70,14 @@ The file `cursor-handoff-autoapply-setup.md` is the **TE-0 fork-audit** brief (c
 
 ### TE-1 — LinkedIn official export into Postgres (no scrape)
 
-Extend the existing database. Input is LinkedIn **Get a copy of your data** CSVs (Connections + Followers), not Playwright.
+Extend the existing database. Input is LinkedIn **Get a copy of your data** — the **complete** archive (`Complete_LinkedInDataExport_*.zip`), not only Connections + Followers, and not Playwright.
 
-- **TE-1.1** Schema: connections and followers tables (idempotent key: LinkedIn member URL or email). M.
-- **TE-1.2** Import the two CSVs; merge, don’t duplicate. M.
+- **TE-1.1** Schema: archive tables for every file/row in the zip, plus a typed connections/followers projection keyed on member URL or email. Live upsert keys so later chunks merge. M.
+- **TE-1.2** Import each zip (or unpacked folder) whenever it arrives; diff vs Postgres; insert new and update changed; do not delete files omitted from a chunk. M.
 
 ### Epic 8 — Network hygiene (depends on TE-1)
 
-- **US-8.1** Rank connections/followers for prune-vs-keep with a written reason. L. Standard Connections.csv has no interaction counts — Messages export or weak proxies.
+- **US-8.1** Rank connections/followers for prune-vs-keep with a written reason. L. Use Messages (and other archive files) when present; otherwise documented proxies.
 
 ### Epic 10 — Interview demand and SRS (JD text already on `job_snapshots`)
 
