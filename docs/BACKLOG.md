@@ -72,8 +72,8 @@ The file `cursor-handoff-autoapply-setup.md` is the **TE-0 fork-audit** brief (c
 
 Extend the existing database. Input is LinkedIn **Get a copy of your data** — the **complete** archive (`Complete_LinkedInDataExport_*.zip`), not only Connections + Followers, and not Playwright.
 
-- **TE-1.1** Schema: archive tables for every file/row in the zip, plus a typed connections/followers projection keyed on member URL or email. M.
-- **TE-1.2** Import the zip (or unpacked folder); merge, don’t duplicate. M.
+- **TE-1.1** Schema: archive tables for every file/row in the zip, plus a typed connections/followers projection keyed on member URL or email. Live upsert keys so later chunks merge. M.
+- **TE-1.2** Import each zip (or unpacked folder) whenever it arrives; diff vs Postgres; insert new and update changed; do not delete files omitted from a chunk. M.
 
 ### Epic 8 — Network hygiene (depends on TE-1)
 

@@ -47,11 +47,33 @@ def import_linkedin_csv(
     *,
     kind: str,
     tenant_id: str = TENANT_DEFAULT,
+    commit: bool = True,
 ) -> ImportReport:
     if kind not in ("connection", "follower"):
         raise ValueError(f"kind must be connection or follower, got {kind!r}")
     path = Path(path)
     rows = _read_export_rows(path)
+    report = upsert_network_payloads(session, rows, kind=kind, tenant_id=tenant_id)
+    if commit:
+        session.commit()
+    logger.info(
+        "Imported %s from %s: inserted=%d updated=%d invalid=%d",
+        kind,
+        path,
+        report.inserted,
+        report.updated,
+        report.invalid,
+    )
+    return report
+
+
+def upsert_network_payloads(
+    session: Session,
+    rows: list[dict[str, str]],
+    *,
+    kind: str,
+    tenant_id: str = TENANT_DEFAULT,
+) -> ImportReport:
     inserted = updated = invalid = 0
     for raw in rows:
         try:
@@ -79,15 +101,6 @@ def import_linkedin_csv(
             for field, value in payload.items():
                 setattr(existing, field, value)
             updated += 1
-    session.commit()
-    logger.info(
-        "Imported %s from %s: inserted=%d updated=%d invalid=%d",
-        kind,
-        path,
-        inserted,
-        updated,
-        invalid,
-    )
     return ImportReport(inserted=inserted, updated=updated, invalid=invalid)
 
 

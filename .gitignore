@@ -38,7 +38,7 @@ temp/
 !templates/*.docx
 !data/templates/**/*.docx
 *.csv
-!tests/fixtures/linkedin/*.csv
+!tests/fixtures/linkedin/**/*.csv
 
 # Data
 *.db
