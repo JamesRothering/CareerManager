@@ -36,6 +36,9 @@ class PruneCandidate:
     first_name: str | None
     last_name: str | None
     company: str | None
+    position: str | None
+    headline: str | None
+    profile_url: str | None
     prune_score: int
     reasons: tuple[str, ...]
 
@@ -104,6 +107,9 @@ def _score(
         first_name=row.first_name,
         last_name=row.last_name,
         company=row.company,
+        position=row.position,
+        headline=row.headline,
+        profile_url=row.profile_url,
         prune_score=score,
         reasons=tuple(reasons),
     )

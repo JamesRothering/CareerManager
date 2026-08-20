@@ -57,6 +57,9 @@ class TestAppFactory:
         assert "/api/providers/{provider_id}/use" in paths
         # Phase 17.9.4: model catalog endpoint
         assert "/api/providers/{provider_id}/models" in paths
+        # US-8.2: LinkedIn network prune review
+        assert "/api/network/suggestions" in paths
+        assert "/api/network/decisions" in paths
 
 
 class TestSpaShell:
@@ -78,6 +81,11 @@ class TestSpaShell:
 
     def test_materials_subroute_serves_spa_index(self, client):
         response = client.get("/materials/templates")
+        assert response.status_code == 200
+        assert '<div id="app"></div>' in response.text
+
+    def test_network_route_serves_spa_index(self, client):
+        response = client.get("/network")
         assert response.status_code == 200
         assert '<div id="app"></div>' in response.text
 

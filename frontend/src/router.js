@@ -6,6 +6,7 @@ import DashboardView from "./views/DashboardView.vue"
 import JobsView from "./views/JobsView.vue"
 import MaterialsLibraryView from "./views/MaterialsLibraryView.vue"
 import MaterialsView from "./views/MaterialsView.vue"
+import NetworkView from "./views/NetworkView.vue"
 import ProfileView from "./views/ProfileView.vue"
 import ReviewQueueView from "./views/ReviewQueueView.vue"
 import SettingsView from "./views/SettingsView.vue"
@@ -34,6 +35,7 @@ const routes = [
     props: true,
   },
   { path: "/applications", component: ApplicationsView, meta: { label: "Applications" } },
+  { path: "/network", component: NetworkView, meta: { label: "Network" } },
   { path: "/profile", component: ProfileView, meta: { label: "Profile" } },
   { path: "/profile/:profileId", component: ProfileView, meta: { label: "Profile" } },
   { path: "/settings", component: SettingsView, meta: { label: "Settings" } },

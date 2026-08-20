@@ -726,6 +726,16 @@ export const api = {
       body: JSON.stringify(payload),
     })
   },
+  networkSuggestions(decision = "suggested") {
+    return request(`/api/network/suggestions${toQuery({ decision })}`)
+  },
+  setNetworkDecision({ identity_key, kind, decision }) {
+    return request("/api/network/decisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity_key, kind, decision }),
+    })
+  },
   matchingExplain(job) {
     // Phase 16.3: "Why was this filtered?" explainability endpoint.
     // Re-scores the job server-side against the active profile and
