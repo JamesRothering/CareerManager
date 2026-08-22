@@ -369,6 +369,21 @@ def make_row_key(relative_path: str, payload: dict) -> str:
         return "binary"
     if payload.get("_text") is not None and set(payload.keys()) <= {"_text"}:
         return "text"
+    conversation = lookup.get("conversation id")
+    if conversation:
+        # Do this before profile-URL keys. Messages include SENDER PROFILE URL
+        # on every row; using that as the upsert key collapsed a whole thread
+        # into one row per person.
+        return _clip(
+            "|".join(
+                [
+                    conversation,
+                    lookup.get("date", ""),
+                    lookup.get("from", ""),
+                    lookup.get("content", ""),
+                ]
+            )
+        )
     url = lookup.get("url") or lookup.get("profile url") or lookup.get("sender profile url")
     email = lookup.get("email address") or lookup.get("email")
     if url or email:
@@ -376,11 +391,6 @@ def make_row_key(relative_path: str, payload: dict) -> str:
             return _clip(_identity_key(url or None, email or None))
         except ValueError:
             pass
-    conversation = lookup.get("conversation id")
-    if conversation:
-        return _clip(
-            "|".join([conversation, lookup.get("date", ""), lookup.get("content", "")[:80]])
-        )
     company = lookup.get("company name") or lookup.get("company")
     title = lookup.get("title") or lookup.get("job title")
     started = lookup.get("started on") or lookup.get("applied at") or lookup.get("connected on")
