@@ -80,6 +80,20 @@ def test_second_chunk_adds_files_and_updates_profile(tmp_path: Path) -> None:
     assert profile.payload["Last Name"] == "Updated"
 
 
+def test_parse_csv_duplicate_headers_do_not_crash() -> None:
+    from src.memory.linkedin_eater import _parse_csv
+
+    data = (
+        b"Company Names,Company Names,Member Age\n"
+        b"Acme,Globex,55\n"
+    )
+    rows = _parse_csv(data)
+    assert rows
+    assert rows[0]["Company Names"] == "Acme"
+    assert rows[0]["Company Names_2"] == "Globex"
+    assert rows[0]["Member Age"] == "55"
+
+
 def test_write_li_csv_roundtrip(tmp_path: Path) -> None:
     from src.memory.linkedin_eater import eat_linkedin_sources, write_li_csv
 
