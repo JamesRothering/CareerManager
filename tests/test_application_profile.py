@@ -81,3 +81,47 @@ def test_rename_default_profile_does_not_leave_phantom_default(profile_store: Pa
 
     ids = {p["id"] for p in profile_module.list_profiles()}
     assert ids == {"my-resume"}, f"Phantom default profile resurrected: {ids}"
+
+
+def test_record_experience_persists_and_returns_by_id(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    result = profile_module.record_experience(
+        profile_id="corpus",
+        payload={
+            "client": "Wells Fargo",
+            "role": "Staff Engineer",
+            "start_date": "2024-01",
+            "end_date": "2025-06",
+            "problem": "Ledger close was late every month",
+            "actions": ["Automated recon"],
+            "outcomes": ["Close in 2 days"],
+            "skills": ["Python", "SQL"],
+        },
+    )
+    assert result["ok"] is True
+    exp_id = result["experience"]["id"]
+    assert result["experience"]["company"] == "Wells Fargo"
+    fetched = profile_module.get_experience(profile_id="corpus", experience_id=exp_id)
+    assert fetched["ok"] is True
+    assert fetched["experience"]["id"] == exp_id
+    assert fetched["experience"]["title"] == "Staff Engineer"
+    stories = fetched["profile"]["story_bank"]
+    assert stories[-1]["context"] == "Ledger close was late every month"
+
+
+def test_record_experience_rejects_missing_client_or_dates(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    missing_client = profile_module.record_experience(
+        profile_id="corpus",
+        payload={"start_date": "2024-01", "end_date": "2024-12", "role": "Engineer"},
+    )
+    assert missing_client["ok"] is False
+    assert missing_client["error_code"] == "field_error"
+    assert "company" in missing_client["field_errors"]
+
+    missing_dates = profile_module.record_experience(
+        profile_id="corpus",
+        payload={"company": "Acme", "role": "Engineer"},
+    )
+    assert missing_dates["ok"] is False
+    assert "start_date" in missing_dates["field_errors"]

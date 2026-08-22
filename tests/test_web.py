@@ -47,6 +47,8 @@ class TestAppFactory:
         assert "/api/jobs/filter-profiles" in paths
         assert "/api/applications" in paths
         assert "/api/profile" in paths
+        assert "/api/profile/{profile_id}/experiences" in paths
+        assert "/api/profile/{profile_id}/experiences/{experience_id}" in paths
         assert "/api/settings/llm" in paths
         assert "/api/settings/search-cache" in paths
         # Phase 10.7: provider management endpoints
@@ -890,6 +892,35 @@ class TestProfileApi:
 
         assert response.status_code == 200
         assert response.json()["active_profile_id"] == "new-profile"
+
+    def test_record_experience_rejects_missing_client(self, client):
+        with patch(
+            "src.web.routes.api.record_experience",
+            return_value={
+                "ok": False,
+                "error": "Missing required fields.",
+                "error_code": "field_error",
+                "field_errors": {"company": "Client / company is required."},
+            },
+        ):
+            response = client.post(
+                "/api/profile/corpus/experiences",
+                json={"start_date": "2024-01", "role": "Engineer"},
+            )
+        assert response.status_code == 400
+        assert response.json()["detail"]["field_errors"]["company"]
+
+    def test_get_experience_not_found(self, client):
+        with patch(
+            "src.web.routes.api.get_experience",
+            return_value={
+                "ok": False,
+                "error": "Experience 'missing' not found.",
+                "error_code": "experience_not_found",
+            },
+        ):
+            response = client.get("/api/profile/corpus/experiences/missing")
+        assert response.status_code == 404
 
     def test_save_profile(self, client):
         with patch(
