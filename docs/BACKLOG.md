@@ -77,7 +77,8 @@ Extend the existing database. Input is LinkedIn **Get a copy of your data** — 
 
 ### Epic 8 — Network hygiene (depends on TE-1)
 
-- **US-8.1** Rank connections/followers for prune-vs-keep with a written reason. L. Use Messages (and other archive files) when present; otherwise documented proxies.
+- **US-8.1** [#41](https://github.com/JamesRothering/CareerManager/issues/41) Rank connections/followers for prune-vs-keep with a written reason. L. Use Messages (and other archive files) when present; otherwise documented proxies. CLI `autoapply network rank` is on master (PR #48).
+- **US-8.2** [#50](https://github.com/JamesRothering/CareerManager/issues/50) Existing Vue console: Network area that runs that ranker, shows suggested prunings, records Keep / Kill / Later in Postgres. Do not auto-unfriend on LinkedIn. L.
 
 ### Epic 10 — Interview demand and SRS (JD text already on `job_snapshots`)
 
