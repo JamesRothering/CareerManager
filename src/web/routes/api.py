@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -70,6 +70,12 @@ from src.application.material_defaults import (
     SUPPORTED_STRATEGIES,
     load_material_defaults_data,
     save_material_defaults,
+)
+from src.application.network import (
+    NetworkDecisionError,
+    UnknownNetworkPersonError,
+    list_prune_suggestions,
+    set_network_decision,
 )
 from src.application.profile import (
     activate_profile_data,
@@ -332,6 +338,12 @@ class ProfileCreatePayload(BaseModel):
 
 class ProfileRenamePayload(BaseModel):
     new_profile_id: str
+
+
+class NetworkDecisionPayload(BaseModel):
+    identity_key: str
+    kind: str
+    decision: str
 
 
 class MatchingExplainPayload(BaseModel):
@@ -1888,3 +1900,49 @@ def _enqueue_regenerate_material(
         "application_id": str(application_uuid),
         "poll_url": f"/api/tasks/{task_id}",
     }
+
+
+@router.get("/network/suggestions")
+async def network_suggestions(
+    decision: str = Query("all"),
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """US-8.2: ranked prune suggestions plus persisted keep/kill/later."""
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            payload = list_prune_suggestions(
+                session, tenant_id=tenant, decision=decision
+            )
+    except NetworkDecisionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid decision") from exc
+    return payload
+
+
+@router.post("/network/decisions")
+async def network_set_decision(
+    payload: NetworkDecisionPayload,
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """Record Keep / Kill / Later. Does not unfriend on LinkedIn."""
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            saved = set_network_decision(
+                session,
+                tenant_id=tenant,
+                identity_key=payload.identity_key,
+                kind=payload.kind,
+                decision=payload.decision,
+            )
+    except NetworkDecisionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid decision") from exc
+    except UnknownNetworkPersonError as exc:
+        raise HTTPException(status_code=404, detail="Unknown network identity") from exc
+    return saved

@@ -14,6 +14,7 @@ import {
   Settings as SettingsIcon,
   Sun,
   UserCircle,
+  Users,
 } from "lucide-vue-next"
 
 import { ensureLinkedInSessionLoaded } from "./lib/linkedin-session"
@@ -41,6 +42,7 @@ const items = [
   { to: "/review", label: "Awaiting Review", icon: ClipboardCheck },
   { to: "/tasks", label: "Plans", icon: ListChecks },
   { to: "/applications", label: "Applications", icon: Send },
+  { to: "/network", label: "Network", icon: Users },
   { to: "/profile", label: "Profile", icon: UserCircle },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ]

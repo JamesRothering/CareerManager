@@ -1,7 +1,8 @@
 """SQLAlchemy ORM models for all database tables.
 
 Covers: jobs, applications, applicant_profile, bullet_pool, qa_bank,
-linkedin_export_* (full official archive), linkedin_network (projection).
+linkedin_export_* (full official archive), linkedin_network (projection),
+linkedin_network_decisions (operator keep/kill/later).
 """
 
 from __future__ import annotations
@@ -679,6 +680,45 @@ class LinkedInNetwork(Base):
     headline: Mapped[str | None] = mapped_column(String(400))
     connected_on: Mapped[date | None] = mapped_column(Date)
     raw: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class LinkedInNetworkDecision(Base):
+    """Operator keep / kill / later for a ranked network identity.
+
+    Kill means James intends to prune. The app never clicks LinkedIn
+    Remove connection. Rows here survive re-rank; they do not delete
+    ``linkedin_network``.
+    """
+
+    __tablename__ = "linkedin_network_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "kind",
+            "identity_key",
+            name="uq_linkedin_network_decisions_tenant_kind_identity",
+        ),
+        CheckConstraint(
+            "kind IN ('connection', 'follower')",
+            name="ck_linkedin_network_decisions_kind",
+        ),
+        CheckConstraint(
+            "decision IN ('keep', 'kill', 'later')",
+            name="ck_linkedin_network_decisions_decision",
+        ),
+        Index("ix_linkedin_network_decisions_tenant_decision", "tenant_id", "decision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    identity_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
