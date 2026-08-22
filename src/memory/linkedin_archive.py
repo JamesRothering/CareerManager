@@ -27,6 +27,7 @@ logger = logging.getLogger("autoapply.memory.linkedin_archive")
 
 _CONNECTION_FILES = {"connections.csv"}
 _FOLLOWER_FILES = {"followers.csv"}
+_COMMIT_EVERY = 200
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def import_linkedin_archive(
     for relative_path, rows in by_path.items():
         file_row = _upsert_file(session, run, tenant_id, relative_path, rows)
         files_touched[relative_path] = file_row
-        for eaten in rows:
+        for index, eaten in enumerate(rows, start=1):
             status = _upsert_row(session, run, file_row, tenant_id, eaten)
             if status == "inserted":
                 inserted += 1
@@ -94,6 +95,9 @@ def import_linkedin_archive(
                 updated += 1
             else:
                 unchanged += 1
+            if index % _COMMIT_EVERY == 0:
+                session.commit()
+        session.commit()
 
     network_invalid = _project_network(session, tenant_id, records)
     run.file_count = len(files_touched)

@@ -274,15 +274,41 @@ def _parse_csv(data: bytes) -> list[dict]:
     text = data.decode("utf-8-sig", errors="replace")
     lines = text.splitlines()
     header_idx = _csv_header_index(lines)
-    reader = csv.DictReader(lines[header_idx:])
-    if reader.fieldnames is None:
+    reader = csv.reader(lines[header_idx:])
+    try:
+        raw_header = next(reader)
+    except StopIteration:
         return []
+    fieldnames = _unique_csv_headers(raw_header)
     rows: list[dict] = []
-    for raw in reader:
-        payload = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
+    for cells in reader:
+        payload = {
+            fieldnames[i] if i < len(fieldnames) else f"column_{i+1}": _csv_cell(cell)
+            for i, cell in enumerate(cells)
+        }
         if any(payload.values()):
             rows.append(payload)
     return rows
+
+
+def _unique_csv_headers(headers: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for raw in headers:
+        name = (raw or "").strip() or "column"
+        count = seen.get(name, 0) + 1
+        seen[name] = count
+        unique.append(name if count == 1 else f"{name}_{count}")
+    return unique
+
+
+def _csv_cell(value: object) -> str:
+    """DictReader used to yield a list when extra cells outran the header."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " | ".join(part for part in (_csv_cell(item) for item in value) if part)
+    return str(value).strip()
 
 
 def _csv_header_index(lines: list[str]) -> int:
@@ -343,6 +369,21 @@ def make_row_key(relative_path: str, payload: dict) -> str:
         return "binary"
     if payload.get("_text") is not None and set(payload.keys()) <= {"_text"}:
         return "text"
+    conversation = lookup.get("conversation id")
+    if conversation:
+        # Do this before profile-URL keys. Messages include SENDER PROFILE URL
+        # on every row; using that as the upsert key collapsed a whole thread
+        # into one row per person.
+        return _clip(
+            "|".join(
+                [
+                    conversation,
+                    lookup.get("date", ""),
+                    lookup.get("from", ""),
+                    lookup.get("content", ""),
+                ]
+            )
+        )
     url = lookup.get("url") or lookup.get("profile url") or lookup.get("sender profile url")
     email = lookup.get("email address") or lookup.get("email")
     if url or email:
@@ -350,11 +391,6 @@ def make_row_key(relative_path: str, payload: dict) -> str:
             return _clip(_identity_key(url or None, email or None))
         except ValueError:
             pass
-    conversation = lookup.get("conversation id")
-    if conversation:
-        return _clip(
-            "|".join([conversation, lookup.get("date", ""), lookup.get("content", "")[:80]])
-        )
     company = lookup.get("company name") or lookup.get("company")
     title = lookup.get("title") or lookup.get("job title")
     started = lookup.get("started on") or lookup.get("applied at") or lookup.get("connected on")

@@ -80,6 +80,42 @@ def test_second_chunk_adds_files_and_updates_profile(tmp_path: Path) -> None:
     assert profile.payload["Last Name"] == "Updated"
 
 
+def test_parse_csv_duplicate_headers_do_not_crash() -> None:
+    from src.memory.linkedin_eater import _parse_csv
+
+    data = (
+        b"Company Names,Company Names,Member Age\n"
+        b"Acme,Globex,55\n"
+    )
+    rows = _parse_csv(data)
+    assert rows
+    assert rows[0]["Company Names"] == "Acme"
+    assert rows[0]["Company Names_2"] == "Globex"
+    assert rows[0]["Member Age"] == "55"
+
+
+def test_message_row_key_keeps_each_message_not_just_the_sender() -> None:
+    from src.memory.linkedin_eater import make_row_key
+
+    sender = "https://www.linkedin.com/in/Ada-Lovelace"
+    first = {
+        "CONVERSATION ID": "2-aaa",
+        "SENDER PROFILE URL": sender,
+        "DATE": "2024-06-01 12:00 UTC",
+        "FROM": "Ada Lovelace",
+        "CONTENT": "Hello from Ada",
+    }
+    second = {
+        **first,
+        "DATE": "2024-06-02 09:00 UTC",
+        "CONTENT": "Following up",
+    }
+    assert make_row_key("messages.csv", first) != make_row_key("messages.csv", second)
+    assert make_row_key("Connections.csv", {"URL": sender, "First Name": "Ada"}) == (
+        make_row_key("Connections.csv", {"URL": sender, "First Name": "Ada", "Company": "X"})
+    )
+
+
 def test_write_li_csv_roundtrip(tmp_path: Path) -> None:
     from src.memory.linkedin_eater import eat_linkedin_sources, write_li_csv
 
