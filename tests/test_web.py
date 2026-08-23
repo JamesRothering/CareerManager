@@ -49,6 +49,7 @@ class TestAppFactory:
         assert "/api/profile" in paths
         assert "/api/profile/{profile_id}/experiences" in paths
         assert "/api/profile/{profile_id}/experiences/{experience_id}" in paths
+        assert "/api/profile/{profile_id}/experiences/{experience_id}/tags" in paths
         assert "/api/settings/llm" in paths
         assert "/api/settings/search-cache" in paths
         # Phase 10.7: provider management endpoints
@@ -941,6 +942,42 @@ class TestProfileApi:
             "OlderCo",
             "CurrentCo",
         ]
+
+    def test_tag_experience_unknown_skill_is_kept(self, client):
+        with patch(
+            "src.web.routes.api.tag_experience",
+            return_value={
+                "ok": True,
+                "experience": {
+                    "id": "exp-1",
+                    "company": "Codojo",
+                    "skills": ["MadeUpSkillXYZ"],
+                    "domains": ["NotACatalogDomain"],
+                },
+            },
+        ):
+            response = client.patch(
+                "/api/profile/corpus/experiences/exp-1/tags",
+                json={
+                    "add_skills": ["MadeUpSkillXYZ"],
+                    "add_domains": ["NotACatalogDomain"],
+                },
+            )
+        assert response.status_code == 200
+        assert response.json()["experience"]["skills"] == ["MadeUpSkillXYZ"]
+        assert response.json()["experience"]["domains"] == ["NotACatalogDomain"]
+
+    def test_query_experiences_by_tag(self, client):
+        with patch(
+            "src.web.routes.api.list_experiences",
+            return_value={
+                "ok": True,
+                "experiences": [{"id": "exp-1", "company": "Wells Fargo", "skills": ["Python"]}],
+            },
+        ):
+            response = client.get("/api/profile/corpus/experiences", params={"tag": "Python"})
+        assert response.status_code == 200
+        assert response.json()["experiences"][0]["id"] == "exp-1"
 
     def test_save_profile(self, client):
         with patch(

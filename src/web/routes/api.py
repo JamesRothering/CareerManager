@@ -89,6 +89,7 @@ from src.application.profile import (
     record_experience,
     rename_profile_data,
     save_profile_data,
+    tag_experience,
 )
 from src.application.providers import (
     connect_api_key_provider,
@@ -355,7 +356,15 @@ class RecordExperiencePayload(BaseModel):
     actions: list[str] | str | None = None
     outcomes: list[str] | str | None = None
     skills: list[str] | str | None = None
+    domains: list[str] | str | None = None
     id: str | None = None
+
+
+class ExperienceTagsPayload(BaseModel):
+    add_skills: list[str] | str | None = None
+    remove_skills: list[str] | str | None = None
+    add_domains: list[str] | str | None = None
+    remove_domains: list[str] | str | None = None
 
 
 class NetworkDecisionPayload(BaseModel):
@@ -1248,11 +1257,19 @@ async def create_profile(payload: ProfileCreatePayload) -> dict:
 
 
 @router.get("/profile/{profile_id}/experiences")
-async def list_profile_experiences(profile_id: str) -> dict:
-    result = list_experiences(profile_id=profile_id)
+async def list_profile_experiences(
+    profile_id: str, tag: str | None = Query(None, description="Optional skill or domain tag")
+) -> dict:
+    result = list_experiences(profile_id=profile_id, tag=tag)
     if not result["ok"]:
-        status = 404 if result["error_code"] == "profile_not_found" else 400
-        raise HTTPException(status_code=status, detail=result["error"])
+        if result["error_code"] == "profile_not_found":
+            raise HTTPException(status_code=404, detail=result["error"])
+        if result["error_code"] == "field_error":
+            raise HTTPException(
+                status_code=400,
+                detail={"error": result["error"], "field_errors": result.get("field_errors", {})},
+            )
+        raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
@@ -1274,6 +1291,26 @@ async def create_experience(profile_id: str, payload: RecordExperiencePayload) -
 @router.get("/profile/{profile_id}/experiences/{experience_id}")
 async def read_experience(profile_id: str, experience_id: str) -> dict:
     result = get_experience(profile_id=profile_id, experience_id=experience_id)
+    if not result["ok"]:
+        status = (
+            404 if result["error_code"] in {"profile_not_found", "experience_not_found"} else 400
+        )
+        raise HTTPException(status_code=status, detail=result["error"])
+    return result
+
+
+@router.patch("/profile/{profile_id}/experiences/{experience_id}/tags")
+async def patch_experience_tags(
+    profile_id: str, experience_id: str, payload: ExperienceTagsPayload
+) -> dict:
+    result = tag_experience(
+        profile_id=profile_id,
+        experience_id=experience_id,
+        add_skills=payload.add_skills,
+        remove_skills=payload.remove_skills,
+        add_domains=payload.add_domains,
+        remove_domains=payload.remove_domains,
+    )
     if not result["ok"]:
         status = (
             404 if result["error_code"] in {"profile_not_found", "experience_not_found"} else 400

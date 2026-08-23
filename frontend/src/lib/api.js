@@ -512,8 +512,22 @@ export const api = {
       body: JSON.stringify({ profile_id: profileId, set_active: setActive }),
     })
   },
-  listExperiences(profileId) {
-    return request(`/api/profile/${encodeURIComponent(profileId)}/experiences`)
+  listExperiences(profileId, tag = "") {
+    const query = tag ? `?tag=${encodeURIComponent(tag)}` : ""
+    return request(`/api/profile/${encodeURIComponent(profileId)}/experiences${query}`)
+  },
+  queryExperiences(profileId, tag) {
+    return this.listExperiences(profileId, tag)
+  },
+  tagExperience(profileId, experienceId, payload) {
+    return request(
+      `/api/profile/${encodeURIComponent(profileId)}/experiences/${encodeURIComponent(experienceId)}/tags`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    )
   },
   saveProfile(profileId, profile, setActive = false) {
     return request(`/api/profile/${profileId}`, {

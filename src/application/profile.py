@@ -289,6 +289,64 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
+def _add_tags(existing: list[str], incoming: list[str]) -> list[str]:
+    seen = {item.lower() for item in existing}
+    merged = list(existing)
+    for tag in incoming:
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(tag)
+    return merged
+
+
+def _remove_tags(existing: list[str], incoming: list[str]) -> list[str]:
+    drop = {item.lower() for item in incoming}
+    return [item for item in existing if item.lower() not in drop]
+
+
+def _sync_experience_tag_derivatives(
+    profile: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    added: list[str],
+    removed: list[str],
+) -> None:
+    """Keep story-bank and bullet tags aligned with experience skills/domains."""
+    add_list = _string_list(added)
+    drop_list = _string_list(removed)
+    for bullet in entry.get("bullets") or []:
+        if not isinstance(bullet, dict):
+            continue
+        tags = _string_list(bullet.get("tags"))
+        tags = _remove_tags(tags, drop_list)
+        tags = _add_tags(tags, add_list)
+        bullet["tags"] = tags
+
+    experience_id = str(entry.get("id") or "")
+    applicable = _add_tags(_string_list(entry.get("skills")), _string_list(entry.get("domains")))
+    for story in profile.get("story_bank") or []:
+        if isinstance(story, dict) and str(story.get("id") or "") == experience_id:
+            story["applicable_to"] = applicable
+
+
+def _load_writable_profile(profile_id: str) -> tuple[str, Path, dict[str, Any]] | dict:
+    target_profile_id = sanitize_profile_id(profile_id)
+    profile_path = get_profile_path(target_profile_id)
+    if not profile_path.exists():
+        return {
+            "ok": False,
+            "error": f"Profile '{target_profile_id}' not found.",
+            "error_code": "profile_not_found",
+        }
+    with open(profile_path, encoding="utf-8") as handle:
+        profile = yaml.safe_load(handle) or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    return target_profile_id, profile_path, _normalize_profile_data(profile)
+
+
 def record_experience(*, profile_id: str, payload: dict[str, Any]) -> dict:
     """Persist one work experience on an existing profile YAML. No parallel DB."""
     _ensure_profile_store()
@@ -329,7 +387,9 @@ def record_experience(*, profile_id: str, payload: dict[str, Any]) -> dict:
     actions = _string_list(payload.get("actions"))
     outcomes = _string_list(payload.get("outcomes"))
     skills = _string_list(payload.get("skills"))
-    bullets = [{"text": line, "tags": skills} for line in [*actions, *outcomes]]
+    domains = _string_list(payload.get("domains"))
+    tag_union = _add_tags(skills, domains)
+    bullets = [{"text": line, "tags": list(tag_union)} for line in [*actions, *outcomes]]
     entry = {
         "id": experience_id,
         "company": company,
@@ -341,6 +401,7 @@ def record_experience(*, profile_id: str, payload: dict[str, Any]) -> dict:
         "actions": actions,
         "outcomes": outcomes,
         "skills": skills,
+        "domains": domains,
         "bullets": bullets,
     }
 
@@ -361,7 +422,7 @@ def record_experience(*, profile_id: str, payload: dict[str, Any]) -> dict:
                 "context": problem,
                 "action": " ".join(actions),
                 "result": " ".join(outcomes),
-                "applicable_to": skills,
+                "applicable_to": tag_union,
             }
         )
         profile["story_bank"] = stories
@@ -416,7 +477,63 @@ def _sort_experiences_newest_first(items: list[Any]) -> list[dict[str, Any]]:
     return dated + open_ended
 
 
-def list_experiences(*, profile_id: str) -> dict:
+def tag_experience(
+    *,
+    profile_id: str,
+    experience_id: str,
+    add_skills: Any = None,
+    remove_skills: Any = None,
+    add_domains: Any = None,
+    remove_domains: Any = None,
+) -> dict:
+    """Add or remove skill/domain tags on one experience. Unknown tags are kept."""
+    _ensure_profile_store()
+    loaded = _load_writable_profile(profile_id)
+    if isinstance(loaded, dict):
+        return loaded
+    target_profile_id, profile_path, profile = loaded
+
+    needle = str(experience_id)
+    entry: dict[str, Any] | None = None
+    for item in profile.get("work_experiences") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == needle:
+            entry = item
+            break
+    if entry is None:
+        return {
+            "ok": False,
+            "error": f"Experience '{experience_id}' not found.",
+            "error_code": "experience_not_found",
+        }
+
+    skills = _string_list(entry.get("skills"))
+    domains = _string_list(entry.get("domains"))
+    before = {item.lower() for item in [*skills, *domains]}
+    skills = _add_tags(skills, _string_list(add_skills))
+    skills = _remove_tags(skills, _string_list(remove_skills))
+    domains = _add_tags(domains, _string_list(add_domains))
+    domains = _remove_tags(domains, _string_list(remove_domains))
+    after = [*skills, *domains]
+    added = [item for item in after if item.lower() not in before]
+    removed = [item for item in before if item not in {tag.lower() for tag in after}]
+    original = _string_list(entry.get("skills")) + _string_list(entry.get("domains"))
+    removed_original = [item for item in original if item.lower() in set(removed)]
+
+    entry["skills"] = skills
+    entry["domains"] = domains
+    _sync_experience_tag_derivatives(
+        profile, entry, added=added, removed=removed_original
+    )
+    _write_profile(profile_path, profile)
+    return {
+        "ok": True,
+        "status": "tagged",
+        "experience": entry,
+        **load_profile_data(target_profile_id),
+    }
+
+
+def list_experiences(*, profile_id: str, tag: str | None = None) -> dict:
     loaded = load_profile_data(profile_id)
     if not loaded.get("has_profile"):
         return {
@@ -426,7 +543,31 @@ def list_experiences(*, profile_id: str) -> dict:
         }
     raw = (loaded.get("profile") or {}).get("work_experiences") or []
     experiences = _sort_experiences_newest_first(raw if isinstance(raw, list) else [])
+    needle = str(tag or "").strip()
+    if needle:
+        needle_key = needle.lower()
+        experiences = [
+            item
+            for item in experiences
+            if needle_key
+            in {
+                value.lower()
+                for value in _string_list(item.get("skills")) + _string_list(item.get("domains"))
+            }
+        ]
     return {"ok": True, "experiences": experiences, **loaded}
+
+
+def query_experiences_by_tag(*, profile_id: str, tag: str) -> dict:
+    needle = str(tag or "").strip()
+    if not needle:
+        return {
+            "ok": False,
+            "error": "Tag is required.",
+            "error_code": "field_error",
+            "field_errors": {"tag": "Tag is required."},
+        }
+    return list_experiences(profile_id=profile_id, tag=needle)
 
 
 def delete_profile_data(*, profile_id: str) -> dict:
