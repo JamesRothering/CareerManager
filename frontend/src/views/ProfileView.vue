@@ -539,7 +539,7 @@ function toEditorProfile(profile) {
   return {
     identity: { ...normalized.identity },
     education: normalized.education.map(toEducationEditor),
-    work_experiences: normalized.work_experiences.map(toExperienceEditor),
+    work_experiences: sortExperiencesNewestFirst(normalized.work_experiences).map(toExperienceEditor),
     projects: normalized.projects.map(toProjectEditor),
     skills: skillKeys.map((key) => ({
       id: makeId("skill"),
@@ -900,6 +900,22 @@ function toExperienceEditor(item) {
         }))
       : [],
   }
+}
+
+function sortExperiencesNewestFirst(items) {
+  const openEndedEnds = new Set(["", "present", "current", "now", "ongoing", "today"])
+  const dated = []
+  const openEnded = []
+  items.forEach((item) => {
+    const end = String(item?.end_date || "").trim().toLowerCase()
+    if (openEndedEnds.has(end)) {
+      openEnded.push(item)
+    } else {
+      dated.push(item)
+    }
+  })
+  dated.sort((left, right) => String(right.end_date || "").localeCompare(String(left.end_date || "")))
+  return [...dated, ...openEnded]
 }
 
 function toProjectEditor(item) {

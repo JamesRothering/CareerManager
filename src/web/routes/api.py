@@ -84,6 +84,7 @@ from src.application.profile import (
     get_experience,
     import_resume_file,
     import_resume_from_library,
+    list_experiences,
     load_profile_data,
     record_experience,
     rename_profile_data,
@@ -1246,6 +1247,15 @@ async def create_profile(payload: ProfileCreatePayload) -> dict:
     return result
 
 
+@router.get("/profile/{profile_id}/experiences")
+async def list_profile_experiences(profile_id: str) -> dict:
+    result = list_experiences(profile_id=profile_id)
+    if not result["ok"]:
+        status = 404 if result["error_code"] == "profile_not_found" else 400
+        raise HTTPException(status_code=status, detail=result["error"])
+    return result
+
+
 @router.post("/profile/{profile_id}/experiences")
 async def create_experience(profile_id: str, payload: RecordExperiencePayload) -> dict:
     result = record_experience(profile_id=profile_id, payload=payload.model_dump())
@@ -1265,7 +1275,9 @@ async def create_experience(profile_id: str, payload: RecordExperiencePayload) -
 async def read_experience(profile_id: str, experience_id: str) -> dict:
     result = get_experience(profile_id=profile_id, experience_id=experience_id)
     if not result["ok"]:
-        status = 404 if result["error_code"] in {"profile_not_found", "experience_not_found"} else 400
+        status = (
+            404 if result["error_code"] in {"profile_not_found", "experience_not_found"} else 400
+        )
         raise HTTPException(status_code=status, detail=result["error"])
     return result
 

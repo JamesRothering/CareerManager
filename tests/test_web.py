@@ -922,6 +922,26 @@ class TestProfileApi:
             response = client.get("/api/profile/corpus/experiences/missing")
         assert response.status_code == 404
 
+    def test_list_experiences(self, client):
+        with patch(
+            "src.web.routes.api.list_experiences",
+            return_value={
+                "ok": True,
+                "experiences": [
+                    {"id": "new", "company": "NewerCo", "end_date": "2025-03"},
+                    {"id": "old", "company": "OlderCo", "end_date": "2022-06"},
+                    {"id": "open", "company": "CurrentCo", "end_date": ""},
+                ],
+            },
+        ):
+            response = client.get("/api/profile/corpus/experiences")
+        assert response.status_code == 200
+        assert [item["company"] for item in response.json()["experiences"]] == [
+            "NewerCo",
+            "OlderCo",
+            "CurrentCo",
+        ]
+
     def test_save_profile(self, client):
         with patch(
             "src.web.routes.api.save_profile_data",

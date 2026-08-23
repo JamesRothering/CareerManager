@@ -395,6 +395,40 @@ def get_experience(*, profile_id: str, experience_id: str) -> dict:
     }
 
 
+_OPEN_ENDED_END_DATES = {"", "present", "current", "now", "ongoing", "today"}
+
+
+def _is_open_ended_end_date(value: Any) -> bool:
+    return str(value or "").strip().lower() in _OPEN_ENDED_END_DATES
+
+
+def _sort_experiences_newest_first(items: list[Any]) -> list[dict[str, Any]]:
+    dated: list[dict[str, Any]] = []
+    open_ended: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _is_open_ended_end_date(item.get("end_date")):
+            open_ended.append(item)
+        else:
+            dated.append(item)
+    dated.sort(key=lambda item: str(item.get("end_date") or ""), reverse=True)
+    return dated + open_ended
+
+
+def list_experiences(*, profile_id: str) -> dict:
+    loaded = load_profile_data(profile_id)
+    if not loaded.get("has_profile"):
+        return {
+            "ok": False,
+            "error": f"Profile '{sanitize_profile_id(profile_id)}' not found.",
+            "error_code": "profile_not_found",
+        }
+    raw = (loaded.get("profile") or {}).get("work_experiences") or []
+    experiences = _sort_experiences_newest_first(raw if isinstance(raw, list) else [])
+    return {"ok": True, "experiences": experiences, **loaded}
+
+
 def delete_profile_data(*, profile_id: str) -> dict:
     _ensure_profile_store()
     target_profile_id = sanitize_profile_id(profile_id)

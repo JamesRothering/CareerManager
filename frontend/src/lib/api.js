@@ -512,6 +512,9 @@ export const api = {
       body: JSON.stringify({ profile_id: profileId, set_active: setActive }),
     })
   },
+  listExperiences(profileId) {
+    return request(`/api/profile/${encodeURIComponent(profileId)}/experiences`)
+  },
   saveProfile(profileId, profile, setActive = false) {
     return request(`/api/profile/${profileId}`, {
       method: "PUT",
