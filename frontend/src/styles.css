@@ -547,6 +547,19 @@ textarea {
   color: hsl(var(--muted-foreground));
 }
 
+.experience-tag-filter {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  margin: 0;
+}
+
+.experience-tag-filter .input {
+  max-width: 240px;
+  margin-left: auto;
+  min-height: 36px;
+}
+
 .form-grid {
   display: grid;
   gap: 14px;
