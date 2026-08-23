@@ -127,6 +127,57 @@ def test_record_experience_rejects_missing_client_or_dates(profile_store: Path) 
     assert "start_date" in missing_dates["field_errors"]
 
 
+def test_list_experiences_newest_end_date_first_open_ended_last(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    profile_module.record_experience(
+        profile_id="corpus",
+        payload={
+            "client": "OlderCo",
+            "role": "Engineer",
+            "start_date": "2020-01",
+            "end_date": "2022-06",
+        },
+    )
+    profile_module.record_experience(
+        profile_id="corpus",
+        payload={
+            "client": "NewerCo",
+            "role": "Engineer",
+            "start_date": "2023-01",
+            "end_date": "2025-03",
+        },
+    )
+    profile_module.record_experience(
+        profile_id="corpus",
+        payload={"client": "CurrentCo", "role": "Engineer", "start_date": "2024-01"},
+    )
+    profile_module.record_experience(
+        profile_id="corpus",
+        payload={
+            "client": "PresentCo",
+            "role": "Engineer",
+            "start_date": "2021-01",
+            "end_date": "Present",
+        },
+    )
+
+    listed = profile_module.list_experiences(profile_id="corpus")
+    assert listed["ok"] is True
+    assert [item["company"] for item in listed["experiences"]] == [
+        "NewerCo",
+        "OlderCo",
+        "CurrentCo",
+        "PresentCo",
+    ]
+
+
+def test_get_experience_missing_id_is_not_found(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    missing = profile_module.get_experience(profile_id="corpus", experience_id="missing")
+    assert missing["ok"] is False
+    assert missing["error_code"] == "experience_not_found"
+
+
 def test_tag_experience_add_and_remove(profile_store: Path) -> None:
     profile_module.create_empty_profile(profile_id="corpus", set_active=True)
     recorded = profile_module.record_experience(

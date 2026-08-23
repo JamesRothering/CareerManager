@@ -456,6 +456,27 @@ def get_experience(*, profile_id: str, experience_id: str) -> dict:
     }
 
 
+_OPEN_ENDED_END_DATES = {"", "present", "current", "now", "ongoing", "today"}
+
+
+def _is_open_ended_end_date(value: Any) -> bool:
+    return str(value or "").strip().lower() in _OPEN_ENDED_END_DATES
+
+
+def _sort_experiences_newest_first(items: list[Any]) -> list[dict[str, Any]]:
+    dated: list[dict[str, Any]] = []
+    open_ended: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _is_open_ended_end_date(item.get("end_date")):
+            open_ended.append(item)
+        else:
+            dated.append(item)
+    dated.sort(key=lambda item: str(item.get("end_date") or ""), reverse=True)
+    return dated + open_ended
+
+
 def tag_experience(
     *,
     profile_id: str,
@@ -495,8 +516,6 @@ def tag_experience(
     after = [*skills, *domains]
     added = [item for item in after if item.lower() not in before]
     removed = [item for item in before if item not in {tag.lower() for tag in after}]
-    # `before` holds lowercase keys; map removed back to original casing from
-    # the pre-update lists so bullet/story sync can drop the same strings.
     original = _string_list(entry.get("skills")) + _string_list(entry.get("domains"))
     removed_original = [item for item in original if item.lower() in set(removed)]
 
@@ -514,7 +533,7 @@ def tag_experience(
     }
 
 
-def query_experiences_by_tag(*, profile_id: str, tag: str) -> dict:
+def list_experiences(*, profile_id: str, tag: str | None = None) -> dict:
     loaded = load_profile_data(profile_id)
     if not loaded.get("has_profile"):
         return {
@@ -522,6 +541,24 @@ def query_experiences_by_tag(*, profile_id: str, tag: str) -> dict:
             "error": f"Profile '{sanitize_profile_id(profile_id)}' not found.",
             "error_code": "profile_not_found",
         }
+    raw = (loaded.get("profile") or {}).get("work_experiences") or []
+    experiences = _sort_experiences_newest_first(raw if isinstance(raw, list) else [])
+    needle = str(tag or "").strip()
+    if needle:
+        needle_key = needle.lower()
+        experiences = [
+            item
+            for item in experiences
+            if needle_key
+            in {
+                value.lower()
+                for value in _string_list(item.get("skills")) + _string_list(item.get("domains"))
+            }
+        ]
+    return {"ok": True, "experiences": experiences, **loaded}
+
+
+def query_experiences_by_tag(*, profile_id: str, tag: str) -> dict:
     needle = str(tag or "").strip()
     if not needle:
         return {
@@ -530,15 +567,7 @@ def query_experiences_by_tag(*, profile_id: str, tag: str) -> dict:
             "error_code": "field_error",
             "field_errors": {"tag": "Tag is required."},
         }
-    needle_key = needle.lower()
-    matches: list[dict[str, Any]] = []
-    for item in (loaded.get("profile") or {}).get("work_experiences") or []:
-        if not isinstance(item, dict):
-            continue
-        tags = _string_list(item.get("skills")) + _string_list(item.get("domains"))
-        if needle_key in {value.lower() for value in tags}:
-            matches.append(item)
-    return {"ok": True, "experiences": matches, **loaded}
+    return list_experiences(profile_id=profile_id, tag=needle)
 
 
 def delete_profile_data(*, profile_id: str) -> dict:

@@ -84,8 +84,8 @@ from src.application.profile import (
     get_experience,
     import_resume_file,
     import_resume_from_library,
+    list_experiences,
     load_profile_data,
-    query_experiences_by_tag,
     record_experience,
     rename_profile_data,
     save_profile_data,
@@ -1257,10 +1257,10 @@ async def create_profile(payload: ProfileCreatePayload) -> dict:
 
 
 @router.get("/profile/{profile_id}/experiences")
-async def list_experiences_by_tag(
-    profile_id: str, tag: str = Query(..., min_length=1, description="Skill or domain tag")
+async def list_profile_experiences(
+    profile_id: str, tag: str | None = Query(None, description="Optional skill or domain tag")
 ) -> dict:
-    result = query_experiences_by_tag(profile_id=profile_id, tag=tag)
+    result = list_experiences(profile_id=profile_id, tag=tag)
     if not result["ok"]:
         if result["error_code"] == "profile_not_found":
             raise HTTPException(status_code=404, detail=result["error"])

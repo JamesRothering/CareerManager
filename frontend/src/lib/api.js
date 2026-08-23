@@ -512,10 +512,12 @@ export const api = {
       body: JSON.stringify({ profile_id: profileId, set_active: setActive }),
     })
   },
+  listExperiences(profileId, tag = "") {
+    const query = tag ? `?tag=${encodeURIComponent(tag)}` : ""
+    return request(`/api/profile/${encodeURIComponent(profileId)}/experiences${query}`)
+  },
   queryExperiences(profileId, tag) {
-    return request(
-      `/api/profile/${encodeURIComponent(profileId)}/experiences?tag=${encodeURIComponent(tag)}`,
-    )
+    return this.listExperiences(profileId, tag)
   },
   tagExperience(profileId, experienceId, payload) {
     return request(
