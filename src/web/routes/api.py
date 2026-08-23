@@ -81,9 +81,11 @@ from src.application.profile import (
     activate_profile_data,
     create_empty_profile,
     delete_profile_data,
+    get_experience,
     import_resume_file,
     import_resume_from_library,
     load_profile_data,
+    record_experience,
     rename_profile_data,
     save_profile_data,
 )
@@ -338,6 +340,21 @@ class ProfileCreatePayload(BaseModel):
 
 class ProfileRenamePayload(BaseModel):
     new_profile_id: str
+
+
+class RecordExperiencePayload(BaseModel):
+    company: str | None = None
+    client: str | None = None
+    title: str | None = None
+    role: str | None = None
+    location: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    problem: str | None = None
+    actions: list[str] | str | None = None
+    outcomes: list[str] | str | None = None
+    skills: list[str] | str | None = None
+    id: str | None = None
 
 
 class NetworkDecisionPayload(BaseModel):
@@ -1226,6 +1243,30 @@ async def create_profile(payload: ProfileCreatePayload) -> dict:
     if not result["ok"]:
         status_code = 409 if result["error_code"] == "profile_exists" else 400
         raise HTTPException(status_code=status_code, detail=result["error"])
+    return result
+
+
+@router.post("/profile/{profile_id}/experiences")
+async def create_experience(profile_id: str, payload: RecordExperiencePayload) -> dict:
+    result = record_experience(profile_id=profile_id, payload=payload.model_dump())
+    if not result["ok"]:
+        if result["error_code"] == "profile_not_found":
+            raise HTTPException(status_code=404, detail=result["error"])
+        if result["error_code"] == "field_error":
+            raise HTTPException(
+                status_code=400,
+                detail={"error": result["error"], "field_errors": result["field_errors"]},
+            )
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/profile/{profile_id}/experiences/{experience_id}")
+async def read_experience(profile_id: str, experience_id: str) -> dict:
+    result = get_experience(profile_id=profile_id, experience_id=experience_id)
+    if not result["ok"]:
+        status = 404 if result["error_code"] in {"profile_not_found", "experience_not_found"} else 400
+        raise HTTPException(status_code=status, detail=result["error"])
     return result
 
 

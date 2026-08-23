@@ -278,6 +278,123 @@ def create_empty_profile(*, profile_id: str, set_active: bool = True) -> dict:
     }
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def record_experience(*, profile_id: str, payload: dict[str, Any]) -> dict:
+    """Persist one work experience on an existing profile YAML. No parallel DB."""
+    _ensure_profile_store()
+    target_profile_id = sanitize_profile_id(profile_id)
+    profile_path = get_profile_path(target_profile_id)
+    if not profile_path.exists():
+        return {
+            "ok": False,
+            "error": f"Profile '{target_profile_id}' not found.",
+            "error_code": "profile_not_found",
+        }
+
+    company = str(payload.get("company") or payload.get("client") or "").strip()
+    start_date = str(payload.get("start_date") or "").strip()
+    field_errors: dict[str, str] = {}
+    if not company:
+        field_errors["company"] = "Client / company is required."
+    if not start_date:
+        field_errors["start_date"] = "Start date is required."
+    if field_errors:
+        return {
+            "ok": False,
+            "error": "Missing required fields.",
+            "error_code": "field_error",
+            "field_errors": field_errors,
+        }
+
+    with open(profile_path, encoding="utf-8") as handle:
+        profile = yaml.safe_load(handle) or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    profile = _normalize_profile_data(profile)
+
+    experience_id = str(payload.get("id") or uuid4())
+    role = str(payload.get("title") or payload.get("role") or "").strip()
+    end_date = str(payload.get("end_date") or "").strip()
+    problem = str(payload.get("problem") or "").strip()
+    actions = _string_list(payload.get("actions"))
+    outcomes = _string_list(payload.get("outcomes"))
+    skills = _string_list(payload.get("skills"))
+    bullets = [{"text": line, "tags": skills} for line in [*actions, *outcomes]]
+    entry = {
+        "id": experience_id,
+        "company": company,
+        "title": role,
+        "location": str(payload.get("location") or "").strip(),
+        "start_date": start_date,
+        "end_date": end_date,
+        "problem": problem,
+        "actions": actions,
+        "outcomes": outcomes,
+        "skills": skills,
+        "bullets": bullets,
+    }
+
+    experiences = [
+        item
+        for item in (profile.get("work_experiences") or [])
+        if isinstance(item, dict) and str(item.get("id") or "") != experience_id
+    ]
+    experiences.append(entry)
+    profile["work_experiences"] = experiences
+
+    if problem or actions or outcomes:
+        stories = list(profile.get("story_bank") or [])
+        stories.append(
+            {
+                "id": experience_id,
+                "theme": "engagement",
+                "context": problem,
+                "action": " ".join(actions),
+                "result": " ".join(outcomes),
+                "applicable_to": skills,
+            }
+        )
+        profile["story_bank"] = stories
+
+    _write_profile(profile_path, profile)
+    return {
+        "ok": True,
+        "status": "recorded",
+        "experience": entry,
+        **load_profile_data(target_profile_id),
+    }
+
+
+def get_experience(*, profile_id: str, experience_id: str) -> dict:
+    loaded = load_profile_data(profile_id)
+    profile = loaded.get("profile") or {}
+    if not loaded.get("has_profile"):
+        return {
+            "ok": False,
+            "error": f"Profile '{sanitize_profile_id(profile_id)}' not found.",
+            "error_code": "profile_not_found",
+        }
+    needle = str(experience_id)
+    for item in profile.get("work_experiences") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == needle:
+            return {"ok": True, "experience": item, **loaded}
+    return {
+        "ok": False,
+        "error": f"Experience '{experience_id}' not found.",
+        "error_code": "experience_not_found",
+    }
+
+
 def delete_profile_data(*, profile_id: str) -> dict:
     _ensure_profile_store()
     target_profile_id = sanitize_profile_id(profile_id)
