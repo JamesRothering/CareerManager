@@ -125,3 +125,89 @@ def test_record_experience_rejects_missing_client_or_dates(profile_store: Path) 
     )
     assert missing_dates["ok"] is False
     assert "start_date" in missing_dates["field_errors"]
+
+
+def test_tag_experience_add_and_remove(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    recorded = profile_module.record_experience(
+        profile_id="corpus",
+        payload={
+            "client": "Wells Fargo",
+            "role": "Staff Engineer",
+            "start_date": "2024-01",
+            "skills": ["Python"],
+        },
+    )
+    exp_id = recorded["experience"]["id"]
+
+    tagged = profile_module.tag_experience(
+        profile_id="corpus",
+        experience_id=exp_id,
+        add_skills=["SQL", "Python"],
+        add_domains=["Payments"],
+        remove_skills=["Python"],
+    )
+    assert tagged["ok"] is True
+    assert tagged["experience"]["skills"] == ["SQL"]
+    assert tagged["experience"]["domains"] == ["Payments"]
+
+    fetched = profile_module.get_experience(profile_id="corpus", experience_id=exp_id)
+    assert fetched["experience"]["skills"] == ["SQL"]
+    assert fetched["experience"]["domains"] == ["Payments"]
+
+
+def test_query_experiences_by_tag_returns_only_matches(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    wells = profile_module.record_experience(
+        profile_id="corpus",
+        payload={"client": "Wells Fargo", "role": "Engineer", "start_date": "2024-01"},
+    )["experience"]["id"]
+    hulu = profile_module.record_experience(
+        profile_id="corpus",
+        payload={"client": "Hulu", "role": "Engineer", "start_date": "2023-01"},
+    )["experience"]["id"]
+    profile_module.tag_experience(
+        profile_id="corpus",
+        experience_id=wells,
+        add_skills=["Python"],
+        add_domains=["Banking"],
+    )
+    profile_module.tag_experience(
+        profile_id="corpus",
+        experience_id=hulu,
+        add_skills=["Vue"],
+        add_domains=["Streaming"],
+    )
+
+    python_hits = profile_module.query_experiences_by_tag(profile_id="corpus", tag="Python")
+    assert python_hits["ok"] is True
+    assert [item["id"] for item in python_hits["experiences"]] == [wells]
+
+    banking_hits = profile_module.query_experiences_by_tag(profile_id="corpus", tag="Banking")
+    assert [item["id"] for item in banking_hits["experiences"]] == [wells]
+
+    missing = profile_module.query_experiences_by_tag(profile_id="corpus", tag="Rust")
+    assert missing["experiences"] == []
+
+
+def test_unknown_experience_tags_are_stored_not_dropped(profile_store: Path) -> None:
+    profile_module.create_empty_profile(profile_id="corpus", set_active=True)
+    exp_id = profile_module.record_experience(
+        profile_id="corpus",
+        payload={"client": "Codojo", "role": "Owner", "start_date": "2020-01"},
+    )["experience"]["id"]
+
+    tagged = profile_module.tag_experience(
+        profile_id="corpus",
+        experience_id=exp_id,
+        add_skills=["MadeUpSkillXYZ"],
+        add_domains=["NotACatalogDomain"],
+    )
+    assert tagged["ok"] is True
+    assert "MadeUpSkillXYZ" in tagged["experience"]["skills"]
+    assert "NotACatalogDomain" in tagged["experience"]["domains"]
+    catalog = tagged["profile"]["skills"]
+    assert "MadeUpSkillXYZ" not in catalog.get("languages", [])
+    fetched = profile_module.get_experience(profile_id="corpus", experience_id=exp_id)
+    assert fetched["experience"]["skills"] == ["MadeUpSkillXYZ"]
+    assert fetched["experience"]["domains"] == ["NotACatalogDomain"]

@@ -74,6 +74,7 @@ const state = reactive({
   editor: emptyEditorProfile(),
   loadedFingerprint: "",
   sections: collapsedSections(),
+  experienceTagFilter: "",
 })
 
 const currentRouteProfileId = computed(() => {
@@ -449,6 +450,18 @@ function removeExperience(index) {
   state.editor.work_experiences.splice(index, 1)
 }
 
+function experienceMatchesFilter(item) {
+  const needle = String(state.experienceTagFilter || "").trim().toLowerCase()
+  if (!needle) {
+    return true
+  }
+  const tags = [
+    ...normalizeStringArray(item.skills),
+    ...normalizeStringArray(item.domains),
+  ]
+  return tags.some((tag) => String(tag).toLowerCase() === needle)
+}
+
 function addExperienceBullet(experienceIndex) {
   const bullet = emptyBullet()
   bullet.expanded = true
@@ -699,11 +712,17 @@ function serializeEducation(item) {
 
 function serializeExperience(item) {
   return compactObject({
+    id: item.source_id,
     company: item.company,
     title: item.title,
     location: item.location,
     start_date: item.start_date,
     end_date: item.end_date,
+    problem: item.problem,
+    actions: normalizeStringArray(item.actions),
+    outcomes: normalizeStringArray(item.outcomes),
+    skills: normalizeStringArray(item.skills),
+    domains: normalizeStringArray(item.domains),
     bullets: item.bullets
       .map((bullet) =>
         compactObject({
@@ -829,12 +848,18 @@ function emptyCourse() {
 function emptyExperience() {
   return {
     id: makeId("experience"),
+    source_id: "",
     expanded: false,
     company: "",
     title: "",
     location: "",
     start_date: "",
     end_date: "",
+    problem: "",
+    actions: [],
+    outcomes: [],
+    skills: [],
+    domains: [],
     bullets: [],
   }
 }
@@ -885,12 +910,18 @@ function toEducationEditor(item) {
 function toExperienceEditor(item) {
   return {
     id: makeId("experience"),
+    source_id: item.id || "",
     expanded: false,
     company: item.company || "",
     title: item.title || "",
     location: item.location || "",
     start_date: item.start_date || "",
     end_date: item.end_date || "",
+    problem: item.problem || "",
+    actions: normalizeStringArray(item.actions),
+    outcomes: normalizeStringArray(item.outcomes),
+    skills: normalizeStringArray(item.skills),
+    domains: normalizeStringArray(item.domains),
     bullets: Array.isArray(item.bullets)
       ? item.bullets.map((bullet) => ({
           id: makeId("bullet"),
@@ -1473,11 +1504,21 @@ function makeId(prefix) {
             <div v-if="state.sections.experience" class="accordion-body">
               <div class="section-head compact-head">
                 <h2>Work Experiences</h2>
+                <label class="field experience-tag-filter">
+                  <span class="sr-only">Filter by tag</span>
+                  <input
+                    v-model="state.experienceTagFilter"
+                    class="input"
+                    type="text"
+                    placeholder="Filter by tag"
+                    aria-label="Filter experiences by tag"
+                  />
+                </label>
                 <Button variant="ghost" size="icon" type="button" aria-label="Add experience" title="Add experience" @click="addExperience"><Plus class="h-4 w-4" /></Button>
               </div>
 
               <div v-if="state.editor.work_experiences.length" class="editor-stack">
-                <article v-for="(item, index) in state.editor.work_experiences" :key="item.id" class="editor-card">
+                <article v-for="(item, index) in state.editor.work_experiences" v-show="experienceMatchesFilter(item)" :key="item.id" class="editor-card">
                   <div class="editor-card-head">
                     <button class="editor-item-head" type="button" :aria-expanded="item.expanded" @click="toggleItem(item)">
                       <div>
@@ -1496,6 +1537,8 @@ function makeId(prefix) {
                     <label class="field"><span>Location</span><input v-model="item.location" class="input" type="text" /></label>
                     <label class="field"><span>Start</span><input v-model="item.start_date" class="input" type="text" placeholder="YYYY-MM" /></label>
                     <label class="field"><span>End</span><input v-model="item.end_date" class="input" type="text" placeholder="YYYY-MM Or Present" /></label>
+                    <label class="field field-span-full"><span>Skills</span><TagInput v-model="item.skills" placeholder="Python, SQL, unknown tags kept" /></label>
+                    <label class="field field-span-full"><span>Domains</span><TagInput v-model="item.domains" placeholder="Payments, Streaming" /></label>
                     </div>
 
                     <div class="editor-subsection">
@@ -1526,6 +1569,10 @@ function makeId(prefix) {
                     </div>
                   </div>
                 </article>
+                <div
+                  v-if="!state.editor.work_experiences.some(experienceMatchesFilter)"
+                  class="empty-state"
+                >No experiences with that tag</div>
               </div>
               <div v-else class="empty-state">No Work Experiences</div>
             </div>
