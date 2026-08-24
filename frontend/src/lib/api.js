@@ -183,6 +183,16 @@ export const api = {
       body: JSON.stringify({ status, job, job_key: jobKey || "" }),
     })
   },
+  listJobCommunications(jobId) {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/communications`)
+  },
+  logJobCommunication(jobId, payload) {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/communications`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  },
   filterProfiles() {
     return request("/api/jobs/filter-profiles")
   },

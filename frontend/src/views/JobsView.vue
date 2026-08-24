@@ -183,6 +183,76 @@ function closeWhyFilteredModal() {
   whyFilteredModal.loading = false
 }
 
+const communicationsModal = reactive({
+  open: false,
+  job: null,
+  loading: false,
+  saving: false,
+  error: "",
+  items: [],
+  channel: "email",
+  direction: "outbound",
+  summary: "",
+  nextAction: "",
+})
+
+function closeCommunicationsModal() {
+  communicationsModal.open = false
+  communicationsModal.job = null
+  communicationsModal.error = ""
+  communicationsModal.items = []
+  communicationsModal.summary = ""
+  communicationsModal.nextAction = ""
+  communicationsModal.loading = false
+  communicationsModal.saving = false
+}
+
+async function openCommunicationsModal(job) {
+  communicationsModal.open = true
+  communicationsModal.job = job
+  communicationsModal.error = ""
+  communicationsModal.items = []
+  communicationsModal.channel = "email"
+  communicationsModal.direction = "outbound"
+  communicationsModal.summary = ""
+  communicationsModal.nextAction = ""
+  communicationsModal.loading = true
+  try {
+    const response = await api.listJobCommunications(job.id)
+    communicationsModal.items = response?.items || []
+  } catch (err) {
+    communicationsModal.error = err?.message || "Could not load communications."
+  } finally {
+    communicationsModal.loading = false
+  }
+}
+
+async function submitCommunication() {
+  const job = communicationsModal.job
+  if (!job?.id) {
+    communicationsModal.error = "Job id is required."
+    return
+  }
+  communicationsModal.saving = true
+  communicationsModal.error = ""
+  try {
+    await api.logJobCommunication(job.id, {
+      channel: communicationsModal.channel,
+      direction: communicationsModal.direction,
+      summary: communicationsModal.summary,
+      next_action: communicationsModal.nextAction,
+    })
+    communicationsModal.summary = ""
+    communicationsModal.nextAction = ""
+    const response = await api.listJobCommunications(job.id)
+    communicationsModal.items = response?.items || []
+  } catch (err) {
+    communicationsModal.error = err?.message || "Could not log communication."
+  } finally {
+    communicationsModal.saving = false
+  }
+}
+
 async function openWhyFilteredModal(job) {
   whyFilteredModal.open = true
   whyFilteredModal.job = job
@@ -1634,6 +1704,9 @@ function buildPageButtons(total, current) {
                 <button class="button ghost compact" type="button" @click="manualApply(job)">
                   ManualApply
                 </button>
+                <button class="button ghost compact" type="button" @click="openCommunicationsModal(job)">
+                  Log comms
+                </button>
                 <button
                   class="button ghost compact"
                   type="button"
@@ -1962,6 +2035,92 @@ function buildPageButtons(total, current) {
         <div v-else class="py-6 text-sm text-muted-foreground">
           No explanation available for this job.
         </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog
+      :open="communicationsModal.open"
+      @update:open="(value) => !value && closeCommunicationsModal()"
+    >
+      <DialogContent class="max-w-lg max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+        <DialogHeader>
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Communications
+          </p>
+          <DialogTitle class="text-xl">Log a touch</DialogTitle>
+          <DialogDescription>
+            <span v-if="communicationsModal.job">
+              {{ communicationsModal.job.title }}
+              <span v-if="communicationsModal.job.company">
+                · {{ communicationsModal.job.company }}
+              </span>
+            </span>
+          </DialogDescription>
+        </DialogHeader>
+
+        <form class="space-y-3" @submit.prevent="submitCommunication">
+          <label class="field">
+            <span>Channel</span>
+            <select v-model="communicationsModal.channel" class="input" aria-label="Communication channel">
+              <option value="email">Email</option>
+              <option value="phone">Phone</option>
+              <option value="linkedin">LinkedIn</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Direction</span>
+            <select v-model="communicationsModal.direction" class="input" aria-label="Communication direction">
+              <option value="outbound">Outbound</option>
+              <option value="inbound">Inbound</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Summary</span>
+            <textarea
+              v-model="communicationsModal.summary"
+              class="input textarea"
+              rows="3"
+              required
+              aria-label="Communication summary"
+            ></textarea>
+          </label>
+          <label class="field">
+            <span>Next action</span>
+            <input
+              v-model="communicationsModal.nextAction"
+              class="input"
+              type="text"
+              aria-label="Next action"
+            />
+          </label>
+          <Button type="submit" :disabled="communicationsModal.saving || !communicationsModal.summary.trim()">
+            {{ communicationsModal.saving ? "Saving…" : "Save communication" }}
+          </Button>
+        </form>
+
+        <p v-if="communicationsModal.error" class="mt-3 text-sm text-destructive">
+          {{ communicationsModal.error }}
+        </p>
+        <div v-else-if="communicationsModal.loading" class="mt-3 text-sm text-muted-foreground">
+          Loading…
+        </div>
+        <ol v-else-if="communicationsModal.items.length" class="mt-4 space-y-2">
+          <li
+            v-for="item in communicationsModal.items"
+            :key="item.id"
+            class="rounded-md border p-2 text-sm"
+          >
+            <div class="flex flex-wrap gap-2">
+              <span class="chip">{{ item.channel }}</span>
+              <span class="chip subtle">{{ item.direction }}</span>
+              <span v-if="item.occurred_at" class="muted-inline">{{ item.occurred_at }}</span>
+            </div>
+            <p class="mt-1">{{ item.summary }}</p>
+            <p v-if="item.next_action" class="muted-inline">Next: {{ item.next_action }}</p>
+          </li>
+        </ol>
+        <p v-else class="mt-3 text-sm text-muted-foreground">No communications logged yet.</p>
       </DialogContent>
     </Dialog>
   </div>

@@ -750,6 +750,37 @@ class JobTriage(Base):
     )
 
 
+class JobCommunication(Base):
+    """US-3.1: a logged touch against a job (email, phone, LinkedIn, other)."""
+
+    __tablename__ = "job_communications"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('email', 'phone', 'linkedin', 'other')",
+            name="ck_job_communications_channel",
+        ),
+        CheckConstraint(
+            "direction IN ('inbound', 'outbound')",
+            name="ck_job_communications_direction",
+        ),
+        Index("ix_job_communications_tenant_job", "tenant_id", "job_id"),
+        Index("ix_job_communications_job_occurred", "job_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    job_id: Mapped[str] = mapped_column(String(400), nullable=False)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    next_action: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class LinkedInExportRun(Base):
     """One ingested zip or folder. LinkedIn may send the archive in chunks."""
 
