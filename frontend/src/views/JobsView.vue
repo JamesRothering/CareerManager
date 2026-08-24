@@ -15,6 +15,7 @@ import {
   Filter as FilterIcon,
   Info,
   Inbox,
+  ListOrdered,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -181,6 +182,42 @@ function closeWhyFilteredModal() {
   whyFilteredModal.error = ""
   whyFilteredModal.breakdown = null
   whyFilteredModal.loading = false
+}
+
+const rankExperiencesModal = reactive({
+  open: false,
+  job: null,
+  loading: false,
+  error: "",
+  rankings: [],
+})
+
+function closeRankExperiencesModal() {
+  rankExperiencesModal.open = false
+  rankExperiencesModal.job = null
+  rankExperiencesModal.error = ""
+  rankExperiencesModal.rankings = []
+  rankExperiencesModal.loading = false
+}
+
+async function openRankExperiencesModal(job) {
+  rankExperiencesModal.open = true
+  rankExperiencesModal.job = job
+  rankExperiencesModal.error = ""
+  rankExperiencesModal.rankings = []
+  rankExperiencesModal.loading = true
+  try {
+    const response = await api.matchingRankExperiences({ job })
+    if (response?.ok) {
+      rankExperiencesModal.rankings = response.rankings || []
+    } else {
+      rankExperiencesModal.error = response?.error || "Could not rank experiences."
+    }
+  } catch (err) {
+    rankExperiencesModal.error = err?.message || "Could not rank experiences."
+  } finally {
+    rankExperiencesModal.loading = false
+  }
 }
 
 async function openWhyFilteredModal(job) {
@@ -1557,6 +1594,14 @@ function buildPageButtons(total, current) {
                 >
                   Details
                 </a>
+                <button
+                  class="button ghost compact"
+                  type="button"
+                  @click="openRankExperiencesModal(job)"
+                >
+                  <ListOrdered class="h-4 w-4" />
+                  Rank experiences
+                </button>
                 <button class="button ghost compact" type="button" @click="manualApply(job)">
                   ManualApply
                 </button>
@@ -1863,6 +1908,70 @@ function buildPageButtons(total, current) {
 
         <div v-else class="py-6 text-sm text-muted-foreground">
           No explanation available for this job.
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog
+      :open="rankExperiencesModal.open"
+      @update:open="(value) => !value && closeRankExperiencesModal()"
+    >
+      <DialogContent class="max-w-2xl max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+        <DialogHeader>
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Experience match
+          </p>
+          <DialogTitle class="text-xl">Ranked experiences</DialogTitle>
+          <DialogDescription>
+            <span v-if="rankExperiencesModal.job">
+              {{ rankExperiencesModal.job.title }}
+              <span v-if="rankExperiencesModal.job.company">
+                · {{ rankExperiencesModal.job.company }}
+              </span>
+            </span>
+          </DialogDescription>
+        </DialogHeader>
+
+        <div v-if="rankExperiencesModal.loading" class="py-6 text-sm text-muted-foreground">
+          Ranking saved experiences…
+        </div>
+
+        <div v-else-if="rankExperiencesModal.error" class="py-6">
+          <Alert variant="destructive">
+            <AlertDescription>{{ rankExperiencesModal.error }}</AlertDescription>
+          </Alert>
+        </div>
+
+        <ol v-else-if="rankExperiencesModal.rankings.length" class="space-y-3">
+          <li
+            v-for="row in rankExperiencesModal.rankings"
+            :key="row.id || row.company"
+            class="rounded-md border p-3"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <strong>{{ row.company || "Experience" }}</strong>
+              <span class="chip">{{ formatPercent(row.score) }}</span>
+            </div>
+            <div v-if="row.title" class="mt-1 text-sm text-muted-foreground">{{ row.title }}</div>
+            <div v-if="(row.matched_tags || row.matched_terms || []).length" class="chip-row mt-2">
+              <span
+                v-for="term in row.matched_tags || row.matched_terms"
+                :key="term"
+                class="chip subtle"
+              >{{ term }}</span>
+            </div>
+            <p
+              v-for="span in row.evidence_spans || []"
+              :key="`${span.field}:${span.text}`"
+              class="mt-2 rounded bg-muted/50 p-2 text-xs italic text-muted-foreground"
+            >
+              {{ span.field }}: {{ span.text }}
+            </p>
+          </li>
+        </ol>
+
+        <div v-else class="py-6 text-sm text-muted-foreground">
+          No overlapping experiences for this job.
         </div>
       </DialogContent>
     </Dialog>

@@ -763,6 +763,13 @@ export const api = {
       body: JSON.stringify({ job }),
     })
   },
+  matchingRankExperiences({ job, profileId = "" }) {
+    return request("/api/matching/rank-experiences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job, profile_id: profileId || "" }),
+    })
+  },
   clearCacheNamespace(namespace) {
     // Mirrors `autoapply redis flush --namespace`: requires the
     // operator to have confirmed via the UI. The body's `confirm: true`
