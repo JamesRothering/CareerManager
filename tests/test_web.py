@@ -34,6 +34,7 @@ class TestAppFactory:
         assert "/assets" in paths
         assert "/api/dashboard" in paths
         assert "/api/jobs/search" in paths
+        assert "/api/jobs/triage" in paths
         assert "/api/jobs/linkedin/session" in paths
         assert "/api/jobs/linkedin/session/connect" in paths
         assert "/api/jobs/manual-apply-target" in paths

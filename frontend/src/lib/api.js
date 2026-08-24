@@ -173,6 +173,16 @@ export const api = {
       body: JSON.stringify(payload),
     })
   },
+  listJobTriage(status = "all") {
+    return request(`/api/jobs/triage${toQuery({ status })}`)
+  },
+  setJobTriage({ status, job, jobKey = "" }) {
+    return request("/api/jobs/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, job, job_key: jobKey || "" }),
+    })
+  },
   filterProfiles() {
     return request("/api/jobs/filter-profiles")
   },

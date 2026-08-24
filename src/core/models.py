@@ -725,6 +725,31 @@ class LinkedInNetworkDecision(Base):
     )
 
 
+class JobTriage(Base):
+    """US-2.4: persist Pursue / Skip / Later for a discovered job."""
+
+    __tablename__ = "job_triage"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "job_key", name="uq_job_triage_tenant_job_key"),
+        CheckConstraint(
+            "status IN ('pursue', 'skip', 'later')",
+            name="ck_job_triage_status",
+        ),
+        Index("ix_job_triage_tenant_status", "tenant_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, default=TENANT_DEFAULT)
+    job_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    job: Mapped[dict | None] = mapped_column(JSONB)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class LinkedInExportRun(Base):
     """One ingested zip or folder. LinkedIn may send the archive in chunks."""
 

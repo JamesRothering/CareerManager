@@ -259,6 +259,12 @@ const paginatedJobs = computed(() => {
   return currentViewJobs.value.slice(start, start + state.pageSize)
 })
 const pageButtons = computed(() => buildPageButtons(totalPages.value, state.currentPage))
+const triageFilterChips = [
+  { id: "all", label: "All statuses" },
+  { id: "pursue", label: "Pursue" },
+  { id: "skip", label: "Skip" },
+  { id: "later", label: "Later" },
+]
 const resultViewChips = computed(() => {
   const chips = []
   if (state.searched) {
@@ -378,6 +384,7 @@ onMounted(() => {
   }
   void loadFilterProfiles()
   void loadMaterialTemplates()
+  void loadJobTriage()
 })
 
 const emptyStateMessage = computed(() => {
@@ -1088,8 +1095,61 @@ function refreshDisplayedJobs() {
   state.filteredJobs = filterFetchedJobs(state.resultSets.fetched)
 }
 
+function jobTriageKey(job) {
+  const source = String(job?.source || "").trim()
+  const sourceId = String(job?.source_id || job?.id || "").trim()
+  if (source && sourceId) {
+    return `${source}::${sourceId}`
+  }
+  return sourceId
+}
+
+function jobTriageStatus(job) {
+  return state.triageByKey[jobTriageKey(job)] || ""
+}
+
+async function loadJobTriage() {
+  try {
+    const response = await api.listJobTriage("all")
+    const next = {}
+    for (const item of response?.items || []) {
+      if (item.job_key) {
+        next[item.job_key] = item.status
+      }
+    }
+    state.triageByKey = next
+  } catch {
+    state.triageByKey = { ...state.triageByKey }
+  }
+  refreshDisplayedJobs()
+}
+
+async function setJobTriageStatus(job, status) {
+  try {
+    const response = await api.setJobTriage({ status, job })
+    const key = response?.job_key || jobTriageKey(job)
+    state.triageByKey = { ...state.triageByKey, [key]: response?.status || status }
+    refreshDisplayedJobs()
+  } catch (error) {
+    state.error = error.message || "Could not save job status."
+  }
+}
+
+function setTriageFilter(status) {
+  state.triageFilter = status
+  state.currentPage = 1
+  refreshDisplayedJobs()
+}
+
 function filterFetchedJobs(jobs) {
-  return jobs.filter((job) => matchesLocalFilters(job))
+  return jobs.filter((job) => matchesLocalFilters(job) && matchesTriageFilter(job))
+}
+
+function matchesTriageFilter(job) {
+  if (state.triageFilter === "all") {
+    return true
+  }
+  return jobTriageStatus(job) === state.triageFilter
 }
 
 function matchesLocalFilters(job) {
@@ -1460,6 +1520,19 @@ function buildPageButtons(total, current) {
             {{ chip.label }}
           </button>
         </div>
+        <div class="chip-row jobs-triage-filters" v-if="state.searched">
+          <button
+            v-for="chip in triageFilterChips"
+            :key="chip.id"
+            class="chip result-chip-button"
+            :class="{ subtle: state.triageFilter !== chip.id }"
+            type="button"
+            :aria-pressed="state.triageFilter === chip.id"
+            @click="setTriageFilter(chip.id)"
+          >
+            {{ chip.label }}
+          </button>
+        </div>
       </div>
 
       <div v-if="state.searched && currentViewJobs.length" class="jobs-pagination-bar">
@@ -1520,6 +1593,7 @@ function buildPageButtons(total, current) {
                     <CheckCircle2 class="mr-1 h-3.5 w-3.5" />
                     Applied
                   </span>
+                  <span v-if="jobTriageStatus(job)" class="chip">{{ jobTriageStatus(job) }}</span>
                   <button
                     v-if="job.raw_data?.disqualified"
                     type="button"
@@ -1559,6 +1633,30 @@ function buildPageButtons(total, current) {
                 </a>
                 <button class="button ghost compact" type="button" @click="manualApply(job)">
                   ManualApply
+                </button>
+                <button
+                  class="button ghost compact"
+                  type="button"
+                  :class="{ 'is-active': jobTriageStatus(job) === 'pursue' }"
+                  @click="setJobTriageStatus(job, 'pursue')"
+                >
+                  Pursue
+                </button>
+                <button
+                  class="button ghost compact"
+                  type="button"
+                  :class="{ 'is-active': jobTriageStatus(job) === 'skip' }"
+                  @click="setJobTriageStatus(job, 'skip')"
+                >
+                  Skip
+                </button>
+                <button
+                  class="button ghost compact"
+                  type="button"
+                  :class="{ 'is-active': jobTriageStatus(job) === 'later' }"
+                  @click="setJobTriageStatus(job, 'later')"
+                >
+                  Later
                 </button>
                 <button
                   class="button ghost compact material-open-button"
