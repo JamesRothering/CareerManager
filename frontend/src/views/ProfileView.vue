@@ -1598,8 +1598,15 @@ function makeId(prefix) {
                     <strong>{{ row.company }}</strong>
                     <span class="chip">{{ rankScoreLabel(row.score) }}</span>
                     <span v-if="row.title" class="muted-inline">{{ row.title }}</span>
-                    <span v-if="row.matched_terms?.length" class="muted-inline">
-                      {{ row.matched_terms.join(", ") }}
+                    <span v-if="(row.matched_tags || row.matched_terms || []).length" class="muted-inline">
+                      {{ (row.matched_tags || row.matched_terms).join(", ") }}
+                    </span>
+                    <span
+                      v-for="span in row.evidence_spans || []"
+                      :key="`${span.field}:${span.text}`"
+                      class="rank-evidence"
+                    >
+                      {{ span.field }}: {{ span.text }}
                     </span>
                   </li>
                 </ol>

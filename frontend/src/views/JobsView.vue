@@ -1953,9 +1953,20 @@ function buildPageButtons(total, current) {
               <span class="chip">{{ formatPercent(row.score) }}</span>
             </div>
             <div v-if="row.title" class="mt-1 text-sm text-muted-foreground">{{ row.title }}</div>
-            <div v-if="row.matched_terms?.length" class="chip-row mt-2">
-              <span v-for="term in row.matched_terms" :key="term" class="chip subtle">{{ term }}</span>
+            <div v-if="(row.matched_tags || row.matched_terms || []).length" class="chip-row mt-2">
+              <span
+                v-for="term in row.matched_tags || row.matched_terms"
+                :key="term"
+                class="chip subtle"
+              >{{ term }}</span>
             </div>
+            <p
+              v-for="span in row.evidence_spans || []"
+              :key="`${span.field}:${span.text}`"
+              class="mt-2 rounded bg-muted/50 p-2 text-xs italic text-muted-foreground"
+            >
+              {{ span.field }}: {{ span.text }}
+            </p>
           </li>
         </ol>
 

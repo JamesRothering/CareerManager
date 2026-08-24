@@ -108,22 +108,67 @@ def _job_text(job: dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts if part)
 
 
+def _experience_fields(experience: dict[str, Any]) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    problem = str(experience.get("problem") or "").strip()
+    if problem:
+        fields.append(("problem", problem))
+    for name in ("skills", "domains", "actions", "outcomes"):
+        joined = ", ".join(_collect_strings(experience.get(name)))
+        if joined:
+            fields.append((name, joined))
+    for bullet in experience.get("bullets") or []:
+        if isinstance(bullet, dict):
+            text = str(bullet.get("text") or bullet.get("content") or "").strip()
+            if text:
+                fields.append(("bullets", text))
+            tags = ", ".join(_collect_strings(bullet.get("tags")))
+            if tags:
+                fields.append(("bullet_tags", tags))
+        elif bullet:
+            fields.append(("bullets", str(bullet)))
+    company = str(experience.get("company") or experience.get("client") or "").strip()
+    if company:
+        fields.append(("company", company))
+    return fields
+
+
 def _experience_text(experience: dict[str, Any]) -> str:
-    parts = [
-        experience.get("company") or experience.get("client"),
-        experience.get("problem"),
-        " ".join(_collect_strings(experience.get("skills"))),
-        " ".join(_collect_strings(experience.get("domains"))),
-        " ".join(_collect_strings(experience.get("actions"))),
-        " ".join(_collect_strings(experience.get("outcomes"))),
+    return " ".join(text for _field, text in _experience_fields(experience))
+
+
+def _matched_tags(experience: dict[str, Any], job_terms: set[str]) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    candidates = [
+        *_collect_strings(experience.get("skills")),
+        *_collect_strings(experience.get("domains")),
     ]
     for bullet in experience.get("bullets") or []:
         if isinstance(bullet, dict):
-            parts.append(bullet.get("text") or bullet.get("content"))
-            parts.extend(_collect_strings(bullet.get("tags")))
-        elif bullet:
-            parts.append(str(bullet))
-    return " ".join(str(part) for part in parts if part)
+            candidates.extend(_collect_strings(bullet.get("tags")))
+    for tag in candidates:
+        key = tag.lower()
+        if key in seen:
+            continue
+        if _terms(tag) & job_terms:
+            seen.add(key)
+            tags.append(tag)
+    return tags
+
+
+def _evidence_spans(
+    experience: dict[str, Any], overlap: list[str]
+) -> list[dict[str, str]]:
+    needles = set(overlap)
+    spans: list[dict[str, str]] = []
+    for field, text in _experience_fields(experience):
+        if not needles & _terms(text):
+            continue
+        spans.append({"field": field, "text": text[:240]})
+        if len(spans) >= 3:
+            break
+    return spans
 
 
 def rank_experiences(
@@ -157,6 +202,9 @@ def rank_experiences(
                 ),
                 "score": round(len(overlap) / len(job_terms), 6),
                 "matched_terms": overlap,
+                "matched_tags": _matched_tags(experience, job_terms),
+                "evidence_spans": _evidence_spans(experience, overlap)
+                or [{"field": "match", "text": overlap[0]}],
             }
         )
 
