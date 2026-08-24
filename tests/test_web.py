@@ -63,6 +63,8 @@ class TestAppFactory:
         # US-8.2: LinkedIn network prune review
         assert "/api/network/suggestions" in paths
         assert "/api/network/decisions" in paths
+        assert "/api/matching/explain" in paths
+        assert "/api/matching/rank-experiences" in paths
 
 
 class TestSpaShell:

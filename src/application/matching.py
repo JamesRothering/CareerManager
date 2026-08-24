@@ -129,3 +129,37 @@ def explain_job(payload: dict[str, Any]) -> dict[str, Any]:
         "score_breakdown": breakdown.to_dict(),
         "warnings": warnings,
     }
+
+
+def rank_experiences_for_job(
+    *,
+    job: dict[str, Any],
+    profile_id: str | None = None,
+) -> dict[str, Any]:
+    """Rank the profile's work experiences against a job posting (US-2.2)."""
+    from src.application.profile import get_active_profile_id, list_experiences
+    from src.matching.experience_rank import rank_experiences
+
+    target_id = str(profile_id or "").strip() or (get_active_profile_id() or "")
+    if not target_id:
+        return {
+            "ok": False,
+            "rankings": [],
+            "error": "No active profile -- run `autoapply init` first.",
+            "error_code": "profile_not_found",
+        }
+
+    listed = list_experiences(profile_id=target_id)
+    if not listed.get("ok"):
+        return {
+            "ok": False,
+            "rankings": [],
+            "error": listed.get("error") or "Profile not found.",
+            "error_code": listed.get("error_code") or "profile_not_found",
+        }
+
+    return {
+        "ok": True,
+        "profile_id": target_id,
+        "rankings": rank_experiences(listed.get("experiences") or [], job or {}),
+    }
