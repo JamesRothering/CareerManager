@@ -65,6 +65,9 @@ from src.application.jobs import (
     validate_material_template as validate_material_template_usecase,
 )
 from src.application.matching import explain_job as explain_job_usecase
+from src.application.matching import (
+    rank_experiences_for_job as rank_experiences_for_job_usecase,
+)
 from src.application.material_defaults import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_STRATEGIES,
@@ -385,6 +388,13 @@ class MatchingExplainPayload(BaseModel):
     job: dict
 
 
+class MatchingRankExperiencesPayload(BaseModel):
+    """Payload for ``POST /api/matching/rank-experiences`` (US-2.2)."""
+
+    job: dict
+    profile_id: str = ""
+
+
 @router.get("/digest")
 async def get_morning_digest(window_hours: int = 24) -> dict:
     """Phase 17.6 morning digest payload for the dashboard banner.
@@ -423,6 +433,15 @@ async def matching_explain(payload: MatchingExplainPayload) -> dict:
     even when the user re-runs after a profile edit.
     """
     return explain_job_usecase(payload.job)
+
+
+@router.post("/matching/rank-experiences")
+async def matching_rank_experiences(payload: MatchingRankExperiencesPayload) -> dict:
+    """US-2.2: rank saved work experiences against a job posting."""
+    return rank_experiences_for_job_usecase(
+        job=payload.job,
+        profile_id=payload.profile_id or None,
+    )
 
 
 @router.get("/dashboard")
