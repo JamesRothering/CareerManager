@@ -64,6 +64,16 @@ from src.application.jobs import (
 from src.application.jobs import (
     validate_material_template as validate_material_template_usecase,
 )
+from src.application.job_communications import JobCommunicationError
+from src.application.job_communications import (
+    list_job_communications as list_job_communications_usecase,
+)
+from src.application.job_communications import (
+    log_job_communication as log_job_communication_usecase,
+)
+from src.application.job_triage import JobTriageError
+from src.application.job_triage import list_job_triage as list_job_triage_usecase
+from src.application.job_triage import set_job_triage as set_job_triage_usecase
 from src.application.matching import explain_job as explain_job_usecase
 from src.application.material_defaults import (
     SUPPORTED_DOCUMENT_TYPES,
@@ -373,6 +383,24 @@ class NetworkDecisionPayload(BaseModel):
     decision: str
 
 
+class JobCommunicationPayload(BaseModel):
+    """Payload for ``POST /api/jobs/{job_id}/communications`` (US-3.1)."""
+
+    channel: str
+    direction: str
+    summary: str
+    next_action: str = ""
+    occurred_at: str | None = None
+
+
+class JobTriagePayload(BaseModel):
+    """Payload for ``POST /api/jobs/triage`` (US-2.4)."""
+
+    status: str
+    job: dict | None = None
+    job_key: str = ""
+
+
 class MatchingExplainPayload(BaseModel):
     """Payload for ``POST /api/matching/explain``.
 
@@ -428,6 +456,102 @@ async def matching_explain(payload: MatchingExplainPayload) -> dict:
 @router.get("/dashboard")
 async def dashboard_data() -> dict:
     return load_dashboard_data()
+
+
+@router.get("/jobs/triage")
+async def jobs_list_triage(
+    status: str = Query("all"),
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """US-2.4: list persisted Pursue / Skip / Later, optionally filtered."""
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            return list_job_triage_usecase(
+                session, tenant_id=tenant, status=status
+            )
+    except JobTriageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid status") from exc
+
+
+@router.post("/jobs/triage")
+async def jobs_set_triage(
+    payload: JobTriagePayload,
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """US-2.4: persist Pursue / Skip / Later for a job."""
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            return set_job_triage_usecase(
+                session,
+                tenant_id=tenant,
+                status=payload.status,
+                job=payload.job,
+                job_key=payload.job_key or None,
+            )
+    except JobTriageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid status") from exc
+
+
+@router.get("/jobs/{job_id}/communications")
+async def jobs_list_communications(
+    job_id: str,
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """US-3.1: list communications for a job, oldest first."""
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            return list_job_communications_usecase(
+                session, tenant_id=tenant, job_id=job_id
+            )
+    except JobCommunicationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid communication") from exc
+
+
+@router.post("/jobs/{job_id}/communications")
+async def jobs_log_communication(
+    job_id: str,
+    payload: JobCommunicationPayload,
+    tenant_id: str | None = Header(default=None, alias="x-autoapply-tenant"),
+) -> dict:
+    """US-3.1: log a communication against a job."""
+    from datetime import datetime
+
+    from src.core.database import get_session_factory
+
+    tenant = (tenant_id or "default").strip() or "default"
+    occurred = None
+    if payload.occurred_at:
+        try:
+            occurred = datetime.fromisoformat(payload.occurred_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid occurred_at") from exc
+    factory = get_session_factory()
+    try:
+        with factory() as session:
+            return log_job_communication_usecase(
+                session,
+                tenant_id=tenant,
+                job_id=job_id,
+                channel=payload.channel,
+                direction=payload.direction,
+                summary=payload.summary,
+                next_action=payload.next_action,
+                occurred_at=occurred,
+            )
+    except JobCommunicationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid communication") from exc
 
 
 @router.post("/jobs/search")
