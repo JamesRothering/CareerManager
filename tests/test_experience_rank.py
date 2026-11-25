@@ -1,8 +1,9 @@
-"""US-2.2 — rank work experiences against a job.
+"""US-2.2 / US-2.3 — rank work experiences against a job.
 
 Acceptance: a JD that mentions Cassandra + fraud + bank ranks TransUnion
 and M&T above unrelated experiences. Scores are deterministic on fixtures.
-Zero overlap returns an empty list.
+Zero overlap returns an empty list. Each hit lists matched tags and at
+least one evidence span (US-2.3).
 """
 
 from __future__ import annotations
@@ -79,6 +80,19 @@ def test_rank_experiences_orders_transunion_and_mt_above_unrelated() -> None:
     assert ranked[0]["score"] > ranked[1]["score"] > 0
 
 
+def test_rank_hit_lists_matched_tags_and_evidence_span() -> None:
+    ranked = rank_experiences([_HULU, _TRANSUNION], _FRAUD_JOB)
+    assert ranked
+    hit = ranked[0]
+    tags = {str(tag).lower() for tag in hit["matched_tags"]}
+    assert "cassandra" in tags
+    assert "fraud" in tags
+    assert hit["evidence_spans"]
+    blob = " ".join(span["text"] for span in hit["evidence_spans"]).lower()
+    assert "cassandra" in blob or "fraud" in blob
+    assert all("field" in span and "text" in span for span in hit["evidence_spans"])
+
+
 def test_rank_experiences_is_deterministic_on_fixtures() -> None:
     first = rank_experiences([_HULU, _MT, _TRANSUNION], _FRAUD_JOB)
     second = rank_experiences([_TRANSUNION, _HULU, _MT], _FRAUD_JOB)
@@ -146,6 +160,10 @@ def test_rank_experiences_for_job_uses_profile_corpus(profile_store: Path) -> No
     companies = [row["company"] for row in result["rankings"]]
     assert companies[:2] == ["TransUnion", "M&T"]
     assert "Hulu" not in companies
+    top = result["rankings"][0]
+    assert {str(tag).lower() for tag in top["matched_tags"]} >= {"cassandra", "fraud"}
+    assert top["evidence_spans"]
+    assert all("field" in span and "text" in span for span in top["evidence_spans"])
 
     again = matching_module.rank_experiences_for_job(
         job=_FRAUD_JOB, profile_id="corpus"

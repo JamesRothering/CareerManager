@@ -27,6 +27,13 @@ class TestRankExperiencesRoute:
                     "title": "Staff Engineer",
                     "score": 0.5,
                     "matched_terms": ["cassandra", "fraud"],
+                    "matched_tags": ["Cassandra", "fraud"],
+                    "evidence_spans": [
+                        {
+                            "field": "skills",
+                            "text": "Cassandra",
+                        }
+                    ],
                 }
             ],
         }
@@ -48,6 +55,8 @@ class TestRankExperiencesRoute:
         body = response.json()
         assert body["ok"] is True
         assert body["rankings"][0]["company"] == "TransUnion"
+        assert body["rankings"][0]["matched_tags"] == ["Cassandra", "fraud"]
+        assert body["rankings"][0]["evidence_spans"][0]["field"] == "skills"
         usecase.assert_called_once()
 
     def test_route_requires_job(self, client: TestClient) -> None:
