@@ -75,6 +75,12 @@ const state = reactive({
   loadedFingerprint: "",
   sections: collapsedSections(),
   experienceTagFilter: "",
+  rankJobTitle: "",
+  rankJobDescription: "",
+  rankings: [],
+  ranking: false,
+  rankError: "",
+  rankRan: false,
 })
 
 const currentRouteProfileId = computed(() => {
@@ -1044,6 +1050,42 @@ function collapsedSections() {
   }
 }
 
+async function rankExperiencesAgainstJob() {
+  if (!currentProfileId.value) {
+    state.rankError = "Select a profile first."
+    return
+  }
+  state.ranking = true
+  state.rankError = ""
+  state.rankRan = false
+  try {
+    const response = await api.matchingRankExperiences({
+      profileId: currentProfileId.value,
+      job: {
+        title: state.rankJobTitle,
+        description: state.rankJobDescription,
+      },
+    })
+    if (response?.ok) {
+      state.rankings = response.rankings || []
+      state.rankRan = true
+    } else {
+      state.rankings = []
+      state.rankError = response?.error || "Could not rank experiences."
+    }
+  } catch (error) {
+    state.rankings = []
+    state.rankError = error.message || "Could not rank experiences."
+  } finally {
+    state.ranking = false
+  }
+}
+
+function rankScoreLabel(score) {
+  if (score === null || score === undefined) return ""
+  return `${Math.round(Number(score) * 100)}%`
+}
+
 function sectionLabel(section) {
   if (section === "identity") {
     return state.editor.identity.full_name || state.editor.identity.email || "No identity details"
@@ -1518,6 +1560,53 @@ function makeId(prefix) {
             </button>
 
             <div v-if="state.sections.experience" class="accordion-body">
+              <div class="rank-job-panel">
+                <h2>Rank against a job</h2>
+                <p class="muted-inline">Uses the saved profile. Overlap of zero is omitted.</p>
+                <label class="field">
+                  <span>Job title</span>
+                  <input
+                    v-model="state.rankJobTitle"
+                    class="input"
+                    type="text"
+                    placeholder="Fraud Platform Engineer"
+                    aria-label="Job title to rank experiences against"
+                  />
+                </label>
+                <label class="field">
+                  <span>Job description</span>
+                  <textarea
+                    v-model="state.rankJobDescription"
+                    class="input textarea editor-textarea"
+                    rows="4"
+                    placeholder="Cassandra experience for fraud detection at a bank"
+                    aria-label="Job description to rank experiences against"
+                  ></textarea>
+                </label>
+                <div class="actions-row">
+                  <Button
+                    type="button"
+                    :disabled="state.ranking || !currentProfileId"
+                    @click="rankExperiencesAgainstJob"
+                  >
+                    {{ state.ranking ? "Ranking…" : "Rank experiences" }}
+                  </Button>
+                </div>
+                <p v-if="state.rankError" class="text-sm text-destructive">{{ state.rankError }}</p>
+                <ol v-else-if="state.rankings.length" class="rank-job-results">
+                  <li v-for="row in state.rankings" :key="row.id || row.company">
+                    <strong>{{ row.company }}</strong>
+                    <span class="chip">{{ rankScoreLabel(row.score) }}</span>
+                    <span v-if="row.title" class="muted-inline">{{ row.title }}</span>
+                    <span v-if="row.matched_terms?.length" class="muted-inline">
+                      {{ row.matched_terms.join(", ") }}
+                    </span>
+                  </li>
+                </ol>
+                <p v-else-if="state.rankRan" class="muted-inline">
+                  No overlapping experiences for this job.
+                </p>
+              </div>
               <div class="section-head compact-head">
                 <h2>Work Experiences</h2>
                 <label class="field experience-tag-filter">

@@ -1727,6 +1727,35 @@ textarea {
   padding: 0 18px 18px;
 }
 
+.rank-job-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border, hsl(var(--border)));
+  border-radius: 12px;
+}
+
+.rank-job-panel h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.rank-job-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.rank-job-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .profile-admin-grid {
   grid-template-columns: minmax(320px, 0.8fr) minmax(0, 1.4fr);
 }
