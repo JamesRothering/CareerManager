@@ -63,6 +63,8 @@ export const jobsState = reactive({
   filterProfilesLoading: false,
   filterProfiles: persisted.state?.filterProfiles || [],
   selectedFilterProfileId: persisted.state?.selectedFilterProfileId || "",
+  triageFilter: persisted.state?.triageFilter || "all",
+  triageByKey: {},
   sections: {
     basic: persisted.state?.sections?.basic ?? true,
     advanced: persisted.state?.sections?.advanced ?? false,
@@ -97,6 +99,7 @@ export function persistJobsState() {
           applyState: jobsState.applyState,
           filterProfiles: jobsState.filterProfiles,
           selectedFilterProfileId: jobsState.selectedFilterProfileId,
+          triageFilter: jobsState.triageFilter,
           sections: jobsState.sections,
         },
       }),
